@@ -1,0 +1,30 @@
+{
+  "name": "croo-intel-agent",
+  "version": "0.1.0",
+  "description": "Verifiable token due-diligence agent for the CROO Agent Store. Every claim is source-cited. Paid, callable, A2A-composable via CAP.",
+  "license": "MIT",
+  "main": "dist/provider.js",
+  "scripts": {
+    "build": "tsc",
+    "provider": "ts-node src/provider.ts",
+    "demo": "ts-node src/requester-demo.ts",
+    "research": "ts-node src/cli.ts",
+    "test": "ts-node test/engine.test.ts",
+    "start": "node dist/provider.js"
+  },
+  "dependencies": {
+    "@croo-network/sdk": "^0.2.1",
+    "dotenv": "^16.4.5"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
