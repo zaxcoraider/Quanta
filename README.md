@@ -18,11 +18,21 @@ can independently re-check every number. Risk heuristics are transparent, not a
 black box, and a `keccak256` of the deliverable is committed on-chain by CAP at
 settlement for tamper-evidence.
 
-Signals span two independent, free (no-key) sources: **market structure** from
-DexScreener (liquidity depth, pair age, volume/liquidity turnover, FDV vs
-liquidity) and **contract behavior** from an on-chain buy/sell simulation via
-Honeypot.is (honeypot / unsellable detection + real buy/sell/transfer taxes, EVM
-chains). Both are cited; the contract check degrades gracefully on non-EVM chains.
+Signals span three independent, free (no-key) sources — all cited, and all
+degrading gracefully on non-EVM chains:
+
+1. **Market structure** — DexScreener (liquidity depth, pair age, volume/liquidity
+   turnover, FDV vs liquidity).
+2. **Contract behavior** — an on-chain buy/sell simulation via Honeypot.is
+   (honeypot / unsellable detection + real buy/sell/transfer taxes, EVM chains).
+3. **Holder distribution & ownership** — GoPlus Labs (concentration among
+   *dumpable non-contract wallets*, residual owner/creator holdings, and retained
+   authorities: mintable, ownership take-back, hidden owner, unverified source).
+
+Concentration deliberately excludes contract holders (protocols, bridges, LP
+pools, lockers) and locked/burned supply, so blue chips like WETH don't false-flag
+as concentrated — it isolates the share that actually maps to single-wallet dump
+risk.
 
 ## What the buyer receives
 
@@ -46,6 +56,15 @@ chains). Both are cited; the contract check degrades gracefully on non-EVM chain
     "buyTaxPct":         { "value": 0,     "source": { ... } },
     "sellTaxPct":        { "value": 0,     "source": { ... } },
     "simulationSuccess": { "value": true,  "source": { ... } }
+  },
+  "holders": {                               // EVM only — holder distribution & ownership (GoPlus)
+    "holderCount":                { "value": 569239, "source": { "provider": "GoPlus Labs", "url": "...", "fetchedAt": "..." } },
+    "topHolderConcentrationPct":  { "value": 39,     "source": { ... } },  // dumpable non-contract wallets only
+    "ownerPercentPct":            { "value": 0,      "source": { ... } },
+    "isMintable":                 { "value": false,  "source": { ... } },
+    "canTakeBackOwnership":       { "value": false,  "source": { ... } },
+    "hiddenOwner":                { "value": false,  "source": { ... } },
+    "isOpenSource":               { "value": true,   "source": { ... } }
   },
   "riskScore": 45,
   "riskLevel": "high",
@@ -102,7 +121,8 @@ src/
     index.ts         runResearch(input) -> TokenReport
     dexscreener.ts   Live market data (free, no key) + impersonation-resistant resolution
     honeypot.ts      Contract-behavior check via on-chain buy/sell simulation (free, no key, EVM)
-    risk.ts          Transparent, auditable risk heuristics (market + contract + resolution)
+    holders.ts       Holder distribution & ownership check via GoPlus Labs (free, no key, EVM)
+    risk.ts          Transparent, auditable risk heuristics (market + contract + holders + resolution)
     types.ts         Report schema (Cited<T> = value + source)
 test/
   engine.test.ts     Offline unit tests (no network, no keys) — `npm test`

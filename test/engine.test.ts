@@ -12,6 +12,7 @@ import {
   type DexPair,
 } from "../src/engine/dexscreener";
 import { assessRisk } from "../src/engine/risk";
+import { parseHolders, type HoldersResult } from "../src/engine/holders";
 import type { Resolution, Source } from "../src/engine/types";
 
 let passed = 0;
@@ -180,6 +181,121 @@ test("score is clamped to 100 and level thresholds hold", () => {
   });
   assert.ok(r.score <= 100);
   assert.equal(r.level, "critical");
+});
+
+// ------------------------------------------------- parseHolders (GoPlus mapping)
+console.log("parseHolders (holder-distribution mapping)");
+
+// A GoPlus-shaped holder row. GoPlus reports percent as a 0..1 fraction string.
+function holder(over: { pct: number; contract?: boolean; locked?: boolean; tag?: string; address?: string }) {
+  return {
+    address: over.address ?? "0x" + "e".repeat(40),
+    tag: over.tag ?? "",
+    is_contract: over.contract ? 1 : 0,
+    is_locked: over.locked ? 1 : 0,
+    percent: String(over.pct),
+  };
+}
+
+test("concentration counts only dumpable EOA holders", () => {
+  // 20% EOA + 60% contract + 5% locked → only the 20% EOA is dumpable.
+  const r = parseHolders({
+    holder_count: "1000",
+    holders: [
+      holder({ pct: 0.2 }),
+      holder({ pct: 0.6, contract: true }),
+      holder({ pct: 0.05, locked: true }),
+    ],
+    is_open_source: "1",
+  });
+  assert.equal(r.topHolderConcentrationPct, 20);
+  assert.equal(r.contractHoldersExcluded, 1);
+  assert.equal(r.topHoldersCounted, 1);
+});
+
+test("blue-chip shape (all top holders are contracts) reads as 0% concentration", () => {
+  const r = parseHolders({
+    holders: [holder({ pct: 0.3, contract: true }), holder({ pct: 0.25, contract: true })],
+  });
+  assert.equal(r.topHolderConcentrationPct, 0);
+});
+
+test("burn/dead/null addresses are excluded from concentration", () => {
+  const r = parseHolders({
+    holders: [
+      holder({ pct: 0.4, address: "0x000000000000000000000000000000000000dead" }),
+      holder({ pct: 0.1, tag: "Null Address" }),
+      holder({ pct: 0.15 }),
+    ],
+  });
+  assert.equal(r.topHolderConcentrationPct, 15);
+});
+
+test("tri-state authority flags parse 1/0/empty into true/false/undefined", () => {
+  const r = parseHolders({
+    holders: [],
+    is_mintable: "1",
+    can_take_back_ownership: "0",
+    hidden_owner: "",
+    owner_percent: "0.12",
+  });
+  assert.equal(r.isMintable, true);
+  assert.equal(r.canTakeBackOwnership, false);
+  assert.equal(r.hiddenOwner, undefined);
+  assert.equal(r.ownerPercentPct, 12);
+  // No holders array → concentration undefined, not 0.
+  assert.equal(r.topHolderConcentrationPct, undefined);
+});
+
+// ------------------------------------------------------ assessRisk (holder flags)
+console.log("assessRisk (holder-distribution signals)");
+
+function holders(over: Partial<HoldersResult>): { result: HoldersResult; source: Source } {
+  return { result: { found: true, ...over }, source: SRC };
+}
+
+test("critical EOA concentration is flagged critical", () => {
+  const r = assessRisk(pair({ liq: 50_000_000, ageDays: 900 }), SRC, null, undefined, holders({ topHolderConcentrationPct: 75 }));
+  assert.ok(r.flags.some((f) => f.code === "HOLDER_CONCENTRATION_CRITICAL" && f.level === "critical"));
+});
+
+test("high concentration flagged high, moderate flagged medium", () => {
+  const hi = assessRisk(pair({ liq: 50_000_000, ageDays: 900 }), SRC, null, undefined, holders({ topHolderConcentrationPct: 55 }));
+  assert.ok(hi.flags.some((f) => f.code === "HOLDER_CONCENTRATION_HIGH" && f.level === "high"));
+  const mod = assessRisk(pair({ liq: 50_000_000, ageDays: 900 }), SRC, null, undefined, holders({ topHolderConcentrationPct: 35 }));
+  assert.ok(mod.flags.some((f) => f.code === "HOLDER_CONCENTRATION_MODERATE" && f.level === "medium"));
+});
+
+test("healthy distribution adds no concentration flag", () => {
+  const r = assessRisk(pair({ liq: 50_000_000, ageDays: 900 }), SRC, {
+    result: { isHoneypot: false, buyTaxPct: 0, sellTaxPct: 0, simulationSuccess: true },
+    source: SRC,
+  }, undefined, holders({ topHolderConcentrationPct: 12, isOpenSource: true }));
+  assert.ok(!r.flags.some((f) => f.code.startsWith("HOLDER_CONCENTRATION")));
+  assert.equal(r.level, "low");
+});
+
+test("retained authorities and owner holdings are flagged", () => {
+  const r = assessRisk(pair({ liq: 50_000_000, ageDays: 900 }), SRC, null, undefined, holders({
+    topHolderConcentrationPct: 5,
+    ownerPercentPct: 25,
+    canTakeBackOwnership: true,
+    hiddenOwner: true,
+    isMintable: true,
+    isOpenSource: false,
+  }));
+  const codes = r.flags.map((f) => f.code);
+  assert.ok(codes.includes("OWNER_HOLDS_SUPPLY"));
+  assert.ok(r.flags.some((f) => f.code === "OWNER_HOLDS_SUPPLY" && f.level === "high")); // >=20 → high
+  assert.ok(codes.includes("OWNERSHIP_TAKEBACK"));
+  assert.ok(codes.includes("HIDDEN_OWNER"));
+  assert.ok(codes.includes("MINT_AUTHORITY_ENABLED"));
+  assert.ok(codes.includes("CONTRACT_NOT_OPEN_SOURCE"));
+});
+
+test("holders unavailable (null) adds no holder flags and cannot crash", () => {
+  const r = assessRisk(pair({ liq: 50_000_000, ageDays: 900 }), SRC, null, undefined, null);
+  assert.ok(!r.flags.some((f) => f.code.startsWith("HOLDER_") || f.code === "OWNERSHIP_TAKEBACK"));
 });
 
 // ----------------------------------------------------------------------- result

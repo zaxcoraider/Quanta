@@ -5,6 +5,7 @@
 
 import type { DexPair } from "./dexscreener";
 import type { HoneypotResult } from "./honeypot";
+import type { HoldersResult } from "./holders";
 import type { Resolution, RiskFlag, RiskLevel, Source } from "./types";
 
 const LEVEL_WEIGHT: Record<RiskLevel, number> = {
@@ -18,7 +19,8 @@ export function assessRisk(
   pair: DexPair,
   source: Source,
   honeypot?: { result: HoneypotResult; source: Source } | null,
-  resolution?: Resolution
+  resolution?: Resolution,
+  holders?: { result: HoldersResult; source: Source } | null
 ): {
   flags: RiskFlag[];
   score: number;
@@ -160,13 +162,90 @@ export function assessRisk(
     }
   }
 
+  // Holder-distribution & ownership-authority signals (EVM only, from GoPlus).
+  if (holders && holders.result.found) {
+    const h = holders.result;
+    const hSource = holders.source;
+
+    const conc = h.topHolderConcentrationPct;
+    if (conc !== undefined) {
+      if (conc >= 70) {
+        flags.push({
+          code: "HOLDER_CONCENTRATION_CRITICAL",
+          level: "critical",
+          message: `Top holders control ${conc.toFixed(1)}% of supply (dumpable non-contract wallets) — a handful of wallets can dump the token.`,
+          source: hSource,
+        });
+      } else if (conc >= 50) {
+        flags.push({
+          code: "HOLDER_CONCENTRATION_HIGH",
+          level: "high",
+          message: `Top holders control ${conc.toFixed(1)}% of supply (dumpable non-contract wallets) — heavily concentrated.`,
+          source: hSource,
+        });
+      } else if (conc >= 30) {
+        flags.push({
+          code: "HOLDER_CONCENTRATION_MODERATE",
+          level: "medium",
+          message: `Top holders control ${conc.toFixed(1)}% of supply (dumpable non-contract wallets) — moderate concentration.`,
+          source: hSource,
+        });
+      }
+    }
+
+    // Residual owner/creator holdings are a direct single-wallet dump risk.
+    const ownerHold = Math.max(h.ownerPercentPct ?? 0, h.creatorPercentPct ?? 0);
+    if (ownerHold >= 5) {
+      flags.push({
+        code: "OWNER_HOLDS_SUPPLY",
+        level: ownerHold >= 20 ? "high" : "medium",
+        message: `Owner/creator still holds ${ownerHold.toFixed(1)}% of supply — concentrated insider position.`,
+        source: hSource,
+      });
+    }
+
+    if (h.canTakeBackOwnership === true) {
+      flags.push({
+        code: "OWNERSHIP_TAKEBACK",
+        level: "high",
+        message: "Contract can reclaim ownership after renouncement — 'renounced' cannot be trusted.",
+        source: hSource,
+      });
+    }
+    if (h.hiddenOwner === true) {
+      flags.push({
+        code: "HIDDEN_OWNER",
+        level: "high",
+        message: "Contract hides a privileged owner — undisclosed control over the token.",
+        source: hSource,
+      });
+    }
+    if (h.isMintable === true) {
+      flags.push({
+        code: "MINT_AUTHORITY_ENABLED",
+        level: "medium",
+        message: "Supply is mintable — holdings can be diluted by new issuance.",
+        source: hSource,
+      });
+    }
+    if (h.isOpenSource === false) {
+      flags.push({
+        code: "CONTRACT_NOT_OPEN_SOURCE",
+        level: "medium",
+        message: "Contract source is unverified — behavior cannot be independently audited.",
+        source: hSource,
+      });
+    }
+  }
+
   if (flags.length === 0) {
     flags.push({
       code: "NO_MAJOR_FLAGS",
       level: "low",
       message:
         honeypot?.result.simulationSuccess
-          ? "No major red flags: market structure looks healthy and the buy/sell simulation passed with low tax. Not a guarantee of safety — holder concentration is not checked here."
+          ? "No major red flags: market structure looks healthy, the buy/sell simulation passed with low tax" +
+            (holders?.result.found ? ", and holder distribution/ownership carry no critical authorities." : ". Holder concentration was not checked for this chain.")
           : "No major market-structure red flags from public DEX data. Not a guarantee of safety — verify contract & holders separately.",
       source,
     });

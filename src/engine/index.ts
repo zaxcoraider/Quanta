@@ -4,6 +4,7 @@
 
 import { resolvePair } from "./dexscreener";
 import { checkHoneypot } from "./honeypot";
+import { checkHolders } from "./holders";
 import { assessRisk } from "./risk";
 import { maybeSummarize } from "../llm";
 import type { Cited, ResearchInput, Source, TokenReport } from "./types";
@@ -39,15 +40,20 @@ export function validateInput(raw: any): ResearchInput {
 export async function runResearch(input: ResearchInput): Promise<TokenReport> {
   const { pair, source, resolution } = await resolvePair(input.chain, input.token);
 
-  // Contract-behavior check (EVM only). Uses the resolved on-chain address, not
-  // the raw input, so symbol lookups are covered too. Null when unsupported/failed.
-  const honeypot = await checkHoneypot(input.chain, pair.baseToken.address);
+  // Contract-behavior + holder-distribution checks (EVM only). Both use the
+  // resolved on-chain address (so symbol lookups are covered) and both return
+  // null on unsupported chains / upstream failure, so neither blocks the report.
+  // Run them concurrently — they hit independent APIs.
+  const [honeypot, holders] = await Promise.all([
+    checkHoneypot(input.chain, pair.baseToken.address),
+    checkHolders(input.chain, pair.baseToken.address),
+  ]);
 
   const priceUsd = Number(pair.priceUsd ?? 0);
   const liquidityUsd = pair.liquidity?.usd ?? 0;
   const volume24hUsd = pair.volume?.h24 ?? 0;
 
-  const { flags, score, level } = assessRisk(pair, source, honeypot, resolution);
+  const { flags, score, level } = assessRisk(pair, source, honeypot, resolution, holders);
 
   const base: Omit<TokenReport, "summary"> = {
     schemaVersion: "1.0",
@@ -90,12 +96,54 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
           simulationSuccess: cite(honeypot.result.simulationSuccess, honeypot.source),
         }
       : undefined,
+    holders:
+      holders && holders.result.found
+        ? {
+            holderCount:
+              holders.result.holderCount !== undefined
+                ? cite(holders.result.holderCount, holders.source)
+                : undefined,
+            topHolderConcentrationPct:
+              holders.result.topHolderConcentrationPct !== undefined
+                ? cite(holders.result.topHolderConcentrationPct, holders.source)
+                : undefined,
+            lpLockedPct:
+              holders.result.lpLockedPct !== undefined
+                ? cite(holders.result.lpLockedPct, holders.source)
+                : undefined,
+            ownerPercentPct:
+              holders.result.ownerPercentPct !== undefined
+                ? cite(holders.result.ownerPercentPct, holders.source)
+                : undefined,
+            creatorPercentPct:
+              holders.result.creatorPercentPct !== undefined
+                ? cite(holders.result.creatorPercentPct, holders.source)
+                : undefined,
+            isMintable:
+              holders.result.isMintable !== undefined
+                ? cite(holders.result.isMintable, holders.source)
+                : undefined,
+            canTakeBackOwnership:
+              holders.result.canTakeBackOwnership !== undefined
+                ? cite(holders.result.canTakeBackOwnership, holders.source)
+                : undefined,
+            hiddenOwner:
+              holders.result.hiddenOwner !== undefined
+                ? cite(holders.result.hiddenOwner, holders.source)
+                : undefined,
+            isOpenSource:
+              holders.result.isOpenSource !== undefined
+                ? cite(holders.result.isOpenSource, holders.source)
+                : undefined,
+          }
+        : undefined,
     riskScore: score,
     riskLevel: level,
     flags,
     sources: dedupeSources([
       source,
       ...(honeypot ? [honeypot.source] : []),
+      ...(holders && holders.result.found ? [holders.source] : []),
       ...(flags.map((f) => f.source).filter(Boolean) as Source[]),
     ]),
     generatedAt: new Date().toISOString(),

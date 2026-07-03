@@ -79,6 +79,25 @@ export interface TokenReport {
     simulationSuccess: Cited<boolean>;
   };
   /**
+   * Holder-distribution & ownership verification (EVM only, via GoPlus Labs).
+   * Covers the dimension DexScreener and the buy/sell simulation miss: supply
+   * concentration among top holders, LP-lock share, residual owner/creator
+   * holdings, and dangerous retained authorities (mintable, ownership take-back,
+   * hidden owner). Absent for non-EVM chains or when GoPlus returned nothing —
+   * its absence is itself surfaced as a flag.
+   */
+  holders?: {
+    holderCount?: Cited<number>;
+    topHolderConcentrationPct?: Cited<number>;
+    lpLockedPct?: Cited<number>;
+    ownerPercentPct?: Cited<number>;
+    creatorPercentPct?: Cited<number>;
+    isMintable?: Cited<boolean>;
+    canTakeBackOwnership?: Cited<boolean>;
+    hiddenOwner?: Cited<boolean>;
+    isOpenSource?: Cited<boolean>;
+  };
+  /**
    * A2A enrichment annex: the deliverable of ANOTHER CAP agent this agent
    * hired (and paid) as part of fulfilling the order. contentHash is the
    * upstream order's own on-chain commitment, so the chain of custody is
