@@ -130,7 +130,7 @@ async function main() {
     console.warn(`⌛ Order ${ev.order_id} expired (SLA missed / unpaid).`)
   );
 
-  console.log("🟢 croo-intel-agent provider online. Listening for orders on CAP...");
+  console.log("🟢 Quanta provider online. Listening for orders on CAP...");
   if (UPSTREAM_SERVICE_ID) {
     console.log(`🔗 A2A upstream enrichment enabled: ${UPSTREAM_SERVICE_ID}`);
   }

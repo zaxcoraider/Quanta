@@ -1,4 +1,4 @@
-# croo-intel-agent — Verifiable Token Due-Diligence
+# Quanta — Verifiable Token Due-Diligence
 
 A paid, callable AI agent for the **[CROO Agent Store](https://agent.croo.network/)**, built on the
 **CROO Agent Protocol (CAP)**. It sells one thing and does it well:

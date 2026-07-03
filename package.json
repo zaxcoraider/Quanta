@@ -1,7 +1,7 @@
 {
-  "name": "croo-intel-agent",
+  "name": "quanta",
   "version": "0.1.0",
-  "description": "Verifiable token due-diligence agent for the CROO Agent Store. Every claim is source-cited. Paid, callable, A2A-composable via CAP.",
+  "description": "Quanta — verifiable token due-diligence agent for the CROO Agent Store. Every claim is source-cited. Paid, callable, A2A-composable via CAP.",
   "license": "MIT",
   "main": "dist/provider.js",
   "scripts": {
