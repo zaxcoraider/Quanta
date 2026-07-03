@@ -115,13 +115,15 @@ export interface TokenReport {
     isOpenSource?: Cited<boolean>;
   };
   /**
-   * Contract-capability surface (EVM only, via GoPlus Labs). The dangerous
-   * powers a token contract *retains* — distinct from how it currently behaves.
-   * Owner-gated powers (pausable, blacklist, balance-change…) are only live when
+   * Contract-capability surface (via GoPlus Labs). The dangerous powers a token
+   * *retains* — distinct from how it currently behaves. On EVM these are Solidity
+   * owner functions; on Solana they are SPL / Token-2022 authorities. EVM
+   * owner-gated powers (pausable, blacklist, balance-change…) are only live when
    * `ownershipRenounced` is false, so a renounced token isn't penalised for
-   * dormant code. `cexListed` is a legitimacy signal, not a risk.
+   * dormant code. `cexListed` / `trustedToken` are legitimacy signals, not risks.
    */
   security?: {
+    // EVM (Solidity) capabilities
     ownershipRenounced?: Cited<boolean>;
     isProxy?: Cited<boolean>;
     selfdestruct?: Cited<boolean>;
@@ -138,6 +140,14 @@ export interface TokenReport {
     goplusIsHoneypot?: Cited<boolean>;
     cexListed?: Cited<boolean>;
     cexList?: Cited<string[]>;
+    // Solana (SPL / Token-2022) authorities & extensions
+    freezeAuthorityActive?: Cited<boolean>;
+    nonTransferable?: Cited<boolean>;
+    transferHook?: Cited<boolean>;
+    transferFee?: Cited<boolean>;
+    metadataMutable?: Cited<boolean>;
+    metadataMaliciousAuthority?: Cited<boolean>;
+    trustedToken?: Cited<boolean>;
   };
   /**
    * A2A enrichment annex: the deliverable of ANOTHER CAP agent this agent

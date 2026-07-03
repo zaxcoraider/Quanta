@@ -94,6 +94,22 @@ export interface HoldersResult {
   /** Which CEXs, when known. */
   cexList?: string[];
 
+  // ---- Solana-specific (SPL / Token-2022), populated by solana.ts -----------
+  /** Freeze authority is live — holder token accounts can be frozen (can't sell). */
+  freezeAuthorityActive?: boolean;
+  /** Token is non-transferable (Token-2022) — cannot be moved at all. */
+  nonTransferable?: boolean;
+  /** A transfer hook is set (Token-2022) — transfers route through custom code. */
+  transferHook?: boolean;
+  /** A transfer fee is charged on every transfer (Token-2022). */
+  transferFee?: boolean;
+  /** Token metadata can still be changed by an authority. */
+  metadataMutable?: boolean;
+  /** A metadata/upgrade authority is flagged malicious by GoPlus. */
+  metadataMaliciousAuthority?: boolean;
+  /** On GoPlus's Solana trust list — a legitimacy signal. */
+  trustedToken?: boolean;
+
   /** GoPlus actually returned data for this token. */
   found: boolean;
 }

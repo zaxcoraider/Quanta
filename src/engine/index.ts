@@ -5,6 +5,7 @@
 import { resolvePair } from "./dexscreener";
 import { checkHoneypot } from "./honeypot";
 import { checkHolders } from "./holders";
+import { checkSolanaSecurity } from "./solana";
 import { assessRisk } from "./risk";
 import { maybeSummarize } from "../llm";
 import type { Cited, ResearchInput, Source, TokenReport } from "./types";
@@ -45,14 +46,20 @@ export function validateInput(raw: any): ResearchInput {
 export async function runResearch(input: ResearchInput): Promise<TokenReport> {
   const { pair, source, resolution } = await resolvePair(input.chain, input.token);
 
-  // Contract-behavior + holder-distribution checks (EVM only). Both use the
-  // resolved on-chain address (so symbol lookups are covered) and both return
-  // null on unsupported chains / upstream failure, so neither blocks the report.
-  // Run them concurrently — they hit independent APIs.
-  const [honeypot, holders] = await Promise.all([
+  // Enrichment checks. All use the resolved on-chain address (so symbol lookups
+  // are covered) and all return null on unsupported chains / upstream failure, so
+  // none blocks the report. Run concurrently — independent APIs.
+  //  - Honeypot.is: EVM buy/sell simulation (contract behavior).
+  //  - GoPlus EVM: holder distribution + Solidity capability surface.
+  //  - GoPlus Solana: holder distribution + SPL/Token-2022 authorities.
+  // EVM and Solana GoPlus are mutually exclusive by chain; `holders` is whichever
+  // resolved, normalised to one shape so the report/scoring are shared.
+  const [honeypot, evmHolders, solHolders] = await Promise.all([
     checkHoneypot(input.chain, pair.baseToken.address),
     checkHolders(input.chain, pair.baseToken.address),
+    checkSolanaSecurity(input.chain, pair.baseToken.address),
   ]);
+  const holders = evmHolders ?? solHolders;
 
   const priceUsd = Number(pair.priceUsd ?? 0);
   const liquidityUsd = pair.liquidity?.usd ?? 0;
@@ -167,6 +174,13 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
             goplusIsHoneypot: citeOpt(holders.result.goplusIsHoneypot, holders.source),
             cexListed: citeOpt(holders.result.cexListed, holders.source),
             cexList: citeOpt(holders.result.cexList, holders.source),
+            freezeAuthorityActive: citeOpt(holders.result.freezeAuthorityActive, holders.source),
+            nonTransferable: citeOpt(holders.result.nonTransferable, holders.source),
+            transferHook: citeOpt(holders.result.transferHook, holders.source),
+            transferFee: citeOpt(holders.result.transferFee, holders.source),
+            metadataMutable: citeOpt(holders.result.metadataMutable, holders.source),
+            metadataMaliciousAuthority: citeOpt(holders.result.metadataMaliciousAuthority, holders.source),
+            trustedToken: citeOpt(holders.result.trustedToken, holders.source),
           }
         : undefined,
     riskScore: score,

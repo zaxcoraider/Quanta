@@ -18,11 +18,11 @@ can independently re-check every number. Risk heuristics are transparent, not a
 black box, and a `keccak256` of the deliverable is committed on-chain by CAP at
 settlement for tamper-evidence.
 
-Signals span three independent, free (no-key) sources — all cited, and all
-degrading gracefully on non-EVM chains:
+Signals span independent, free (no-key) sources — all cited, and all degrading
+gracefully when a source doesn't cover a chain:
 
 1. **Market structure** — DexScreener (liquidity depth, pair age, volume/liquidity
-   turnover, FDV vs liquidity).
+   turnover, FDV vs liquidity). All chains.
 2. **Contract behavior** — an on-chain buy/sell simulation via Honeypot.is
    (honeypot / unsellable detection + real buy/sell/transfer taxes, EVM chains).
 3. **Holder distribution + contract-capability surface** — GoPlus Labs.
@@ -32,6 +32,14 @@ degrading gracefully on non-EVM chains:
    balance rewrite, upgradeable proxy, self-destruct, ownership take-back, hidden
    owner, whitelist gating, modifiable slippage, "creator previously shipped a
    honeypot", and more. Plus **CEX-listing** as a positive legitimacy signal.
+   EVM chains.
+4. **Solana coverage** — GoPlus Labs *Solana* token-security (SPL / Token-2022).
+   The rug vectors differ from EVM: live **mint authority** (infinite supply),
+   **freeze authority** (freeze your account → de-facto honeypot), non-transferable
+   tokens, transfer hooks / fees, mutable or malicious metadata authority, and
+   holder concentration — with GoPlus's Solana **trust list** as a positive signal.
+   One Solana call covers both the authority and holder dimensions, so a Solana
+   token that used to return market-data-only now gets a full report.
 
 Two design choices keep this from false-flagging legitimate tokens:
 
@@ -152,8 +160,9 @@ src/
     index.ts         runResearch(input) -> TokenReport
     dexscreener.ts   Live market data (free, no key) + impersonation-resistant resolution
     honeypot.ts      Contract-behavior check via on-chain buy/sell simulation (free, no key, EVM)
-    holders.ts       Holder distribution & ownership check via GoPlus Labs (free, no key, EVM)
-    risk.ts          Transparent, auditable risk heuristics (market + contract + holders + resolution)
+    holders.ts       EVM holder distribution + contract-capability surface via GoPlus (free, no key)
+    solana.ts        Solana SPL/Token-2022 authority + holder check via GoPlus Solana (free, no key)
+    risk.ts          Transparent, auditable heuristics + per-dimension subscores + confidence
     types.ts         Report schema (Cited<T> = value + source)
 test/
   engine.test.ts     Offline unit tests (no network, no keys) — `npm test`

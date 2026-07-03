@@ -138,15 +138,25 @@ export function assessRisk(
     const h = holders.result;
     const s = holders.source;
 
+    // Solana results carry SPL/Token-2022 fields; EVM results don't. Used to keep
+    // the concentration wording honest (Solana can't exclude contract holders).
+    const isSolana =
+      h.freezeAuthorityActive !== undefined ||
+      h.nonTransferable !== undefined ||
+      h.trustedToken !== undefined;
+    const concBasis = isSolana
+      ? "locked/tagged excluded; may include AMM pool accounts"
+      : "dumpable non-contract wallets";
+
     // Distribution → "holders" category.
     const conc = h.topHolderConcentrationPct;
     if (conc !== undefined) {
       if (conc >= 70) {
-        add("HOLDER_CONCENTRATION_CRITICAL", "critical", "holders", `Top holders control ${conc.toFixed(1)}% of supply (dumpable non-contract wallets) — a handful of wallets can dump the token.`, s);
+        add("HOLDER_CONCENTRATION_CRITICAL", "critical", "holders", `Top holders control ${conc.toFixed(1)}% of supply (${concBasis}) — a handful of wallets can dump the token.`, s);
       } else if (conc >= 50) {
-        add("HOLDER_CONCENTRATION_HIGH", "high", "holders", `Top holders control ${conc.toFixed(1)}% of supply (dumpable non-contract wallets) — heavily concentrated.`, s);
+        add("HOLDER_CONCENTRATION_HIGH", "high", "holders", `Top holders control ${conc.toFixed(1)}% of supply (${concBasis}) — heavily concentrated.`, s);
       } else if (conc >= 30) {
-        add("HOLDER_CONCENTRATION_MODERATE", "medium", "holders", `Top holders control ${conc.toFixed(1)}% of supply (dumpable non-contract wallets) — moderate concentration.`, s);
+        add("HOLDER_CONCENTRATION_MODERATE", "medium", "holders", `Top holders control ${conc.toFixed(1)}% of supply (${concBasis}) — moderate concentration.`, s);
       }
     }
 
@@ -215,10 +225,33 @@ export function assessRisk(
       }
     }
 
-    // Legitimacy signal (never raises a score, but surfaced prominently).
+    // Solana-specific (SPL / Token-2022) authority & extension risks.
+    if (h.freezeAuthorityActive === true) {
+      add("FREEZE_AUTHORITY_ACTIVE", "critical", "contract", "Freeze authority is live — your token account can be frozen, making the token unsellable (de-facto honeypot).", s);
+    }
+    if (h.nonTransferable === true) {
+      add("NON_TRANSFERABLE", "critical", "contract", "Token is non-transferable — it cannot be moved or sold.", s);
+    }
+    if (h.metadataMaliciousAuthority === true) {
+      add("MALICIOUS_METADATA_AUTHORITY", "critical", "contract", "A metadata/upgrade authority is flagged malicious by GoPlus.", s);
+    }
+    if (h.transferHook === true) {
+      add("TRANSFER_HOOK", "high", "contract", "A transfer hook routes every transfer through custom code — transfers can be blocked or taxed arbitrarily.", s);
+    }
+    if (h.transferFee === true) {
+      add("TRANSFER_FEE", "medium", "contract", "A transfer fee is charged on every transfer.", s);
+    }
+    if (h.metadataMutable === true && h.metadataMaliciousAuthority !== true) {
+      add("METADATA_MUTABLE", "low", "contract", "Token metadata can still be changed (name/symbol/image are not final).", s);
+    }
+
+    // Legitimacy signals (never raise a score, but surfaced prominently).
     if (h.cexListed === true) {
       const where = h.cexList && h.cexList.length > 0 ? h.cexList.join(", ") : "a centralized exchange";
       add("CEX_LISTED", "low", "positive", `Listed on ${where} — CEX listings undergo review, a strong legitimacy signal.`, s);
+    }
+    if (h.trustedToken === true) {
+      add("TRUSTED_TOKEN", "low", "positive", "On GoPlus's Solana trust list — a curated legitimacy signal.", s);
     }
   }
 
@@ -245,18 +278,26 @@ export function assessRisk(
     holders: scoreOf(flags.filter((f) => f.category === "holders")),
   };
 
-  // Confidence = how many independent sources actually resolved usable data.
-  const sourcesResolved =
-    1 + // DexScreener market data (always present to reach here)
+  // Confidence = how much of the evidence base resolved. A GoPlus *Solana*
+  // result is a single call that covers BOTH the contract-authority and holder
+  // pillars, so it counts as two enrichments; on EVM the two pillars come from
+  // Honeypot.is (behavior) and GoPlus (holders/capability) separately.
+  const solanaResolved =
+    holders?.result.found === true &&
+    (holders.result.freezeAuthorityActive !== undefined ||
+      holders.result.nonTransferable !== undefined ||
+      holders.result.trustedToken !== undefined);
+  const enrichmentsResolved =
     (honeypot?.result.simulationSuccess ? 1 : 0) +
-    (holders?.result.found ? 1 : 0);
-  const confidence: Confidence = sourcesResolved >= 3 ? "high" : sourcesResolved === 2 ? "medium" : "low";
+    (holders?.result.found ? (solanaResolved ? 2 : 1) : 0);
+  const confidence: Confidence =
+    enrichmentsResolved >= 2 ? "high" : enrichmentsResolved === 1 ? "medium" : "low";
   const confidenceNote =
     confidence === "high"
-      ? "All three sources resolved (market, on-chain simulation, holder/contract data)."
+      ? "Market data plus both enrichment pillars resolved (contract behavior/authorities and holder distribution)."
       : confidence === "medium"
-        ? "Two of three sources resolved; one enrichment was unavailable (chain support or upstream)."
-        : "Only market data resolved (e.g. non-EVM chain) — contract behavior and holder distribution are unverified here, so treat a low score cautiously.";
+        ? "Market data plus one enrichment pillar resolved; the other was unavailable (chain support or upstream)."
+        : "Only market data resolved — contract behavior and holder distribution are unverified here, so treat a low score cautiously.";
 
   return { flags, score: overall.score, level: overall.level, scores, confidence, confidenceNote };
 }

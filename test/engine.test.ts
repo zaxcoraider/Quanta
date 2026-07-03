@@ -13,6 +13,7 @@ import {
 } from "../src/engine/dexscreener";
 import { assessRisk } from "../src/engine/risk";
 import { parseHolders, type HoldersResult } from "../src/engine/holders";
+import { parseSolanaSecurity } from "../src/engine/solana";
 import type { Resolution, Source } from "../src/engine/types";
 
 let passed = 0;
@@ -403,6 +404,88 @@ test("confidence reflects how many sources resolved", () => {
   assert.equal(assessRisk(HEALTHY(), SRC, null, undefined, null).confidence, "low"); // market only
   // A failed simulation does not count toward confidence.
   assert.equal(assessRisk(HEALTHY(), SRC, { result: { isHoneypot: false, simulationSuccess: false }, source: SRC }, undefined, null).confidence, "low");
+});
+
+// ------------------------------------------------- parseSolanaSecurity (SPL/T-2022)
+console.log("parseSolanaSecurity (Solana authority mapping)");
+
+test("maps Solana authorities and Token-2022 extensions", () => {
+  const r = parseSolanaSecurity({
+    holder_count: "1000",
+    holders: [
+      { percent: "0.2", is_locked: 0, tag: "" },
+      { percent: "0.1", is_locked: 1, tag: "" }, // locked → excluded
+      { percent: "0.15", is_locked: 0, tag: "Raydium Pool" }, // tagged pool → excluded
+    ],
+    mintable: { authority: [], status: "1" },
+    freezable: { authority: ["x"], status: "1" },
+    balance_mutable_authority: { authority: [], status: "1" },
+    non_transferable: "0",
+    transfer_hook: [{ program_id: "abc" }],
+    transfer_fee: { current_fee_rate: "100" },
+    metadata_mutable: { status: "1", metadata_upgrade_authority: [{ address: "x", malicious_address: 1 }] },
+    trusted_token: "0",
+  });
+  assert.equal(r.isMintable, true); // mint authority live
+  assert.equal(r.freezeAuthorityActive, true);
+  assert.equal(r.ownerCanChangeBalance, true); // balance-mutate authority
+  assert.equal(r.transferHook, true);
+  assert.equal(r.transferFee, true);
+  assert.equal(r.metadataMutable, true);
+  assert.equal(r.metadataMaliciousAuthority, true);
+  assert.equal(r.nonTransferable, false);
+  assert.equal(r.trustedToken, false);
+  assert.equal(r.topHolderConcentrationPct, 20); // only the 0.2 EOA counts
+});
+
+test("revoked Solana authorities parse as false", () => {
+  const r = parseSolanaSecurity({
+    holders: [],
+    mintable: { authority: [], status: "0" },
+    freezable: { authority: [], status: "0" },
+    trusted_token: "1",
+  });
+  assert.equal(r.isMintable, false);
+  assert.equal(r.freezeAuthorityActive, false);
+  assert.equal(r.trustedToken, true);
+});
+
+// -------------------------------------------------- assessRisk (Solana signals)
+console.log("assessRisk (Solana authority signals)");
+
+test("live freeze authority is critical (de-facto honeypot)", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({ freezeAuthorityActive: true }));
+  assert.ok(r.flags.some((f) => f.code === "FREEZE_AUTHORITY_ACTIVE" && f.level === "critical"));
+  assert.equal(r.level, "critical");
+});
+
+test("non-transferable and malicious metadata authority are critical", () => {
+  const nt = assessRisk(HEALTHY(), SRC, null, undefined, holders({ nonTransferable: true }));
+  assert.ok(nt.flags.some((f) => f.code === "NON_TRANSFERABLE" && f.level === "critical"));
+  const mal = assessRisk(HEALTHY(), SRC, null, undefined, holders({ metadataMaliciousAuthority: true, metadataMutable: true }));
+  assert.ok(mal.flags.some((f) => f.code === "MALICIOUS_METADATA_AUTHORITY"));
+  // METADATA_MUTABLE is suppressed when the authority is already flagged malicious.
+  assert.ok(!mal.flags.some((f) => f.code === "METADATA_MUTABLE"));
+});
+
+test("transfer hook flagged high; trusted token is a positive", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({ transferHook: true, trustedToken: true }));
+  assert.ok(r.flags.some((f) => f.code === "TRANSFER_HOOK" && f.level === "high"));
+  const trusted = r.flags.find((f) => f.code === "TRUSTED_TOKEN");
+  assert.ok(trusted && trusted.category === "positive");
+});
+
+test("Solana concentration wording discloses pool-account caveat", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({ topHolderConcentrationPct: 55, freezeAuthorityActive: false }));
+  const flag = r.flags.find((f) => f.code === "HOLDER_CONCENTRATION_HIGH");
+  assert.ok(flag && /AMM pool/.test(flag.message));
+});
+
+test("Solana single-source result still earns high confidence", () => {
+  // freezeAuthorityActive being defined marks this as a Solana result (covers
+  // both pillars), so market + Solana = high even with no Honeypot.is source.
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({ freezeAuthorityActive: false }));
+  assert.equal(r.confidence, "high");
 });
 
 // ----------------------------------------------------------------------- result
