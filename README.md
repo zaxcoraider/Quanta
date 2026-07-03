@@ -163,6 +163,7 @@ src/
     holders.ts       EVM holder distribution + contract-capability surface via GoPlus (free, no key)
     solana.ts        Solana SPL/Token-2022 authority + holder check via GoPlus Solana (free, no key)
     risk.ts          Transparent, auditable heuristics + per-dimension subscores + confidence
+    report.ts        Renders a TokenReport as a human-readable Markdown brief (`--md`)
     types.ts         Report schema (Cited<T> = value + source)
 test/
   engine.test.ts     Offline unit tests (no network, no keys) — `npm test`
@@ -177,9 +178,11 @@ cp .env.example .env      # then fill in your keys
 # 0) Offline unit tests — no network, no keys:
 npm test
 
-# 1) Prove the engine works with zero keys (live DexScreener data):
+# 1) Prove the engine works with zero keys (live data):
 npm run research -- base 0x4200000000000000000000000000000000000006
 npm run research -- ethereum PEPE
+npm run research -- solana BONK              # Solana coverage (mint/freeze authority…)
+npm run research -- ethereum PEPE --md       # human-readable Markdown brief instead of JSON
 
 # 2) Register the provider agent + service in the dashboard (see below), put the
 #    CROO_SDK_KEY and CROO_SERVICE_ID in .env, then run the provider:

@@ -14,7 +14,8 @@ import {
 import { assessRisk } from "../src/engine/risk";
 import { parseHolders, type HoldersResult } from "../src/engine/holders";
 import { parseSolanaSecurity } from "../src/engine/solana";
-import type { Resolution, Source } from "../src/engine/types";
+import { renderMarkdown } from "../src/engine/report";
+import type { Resolution, Source, TokenReport } from "../src/engine/types";
 
 let passed = 0;
 let failed = 0;
@@ -486,6 +487,76 @@ test("Solana single-source result still earns high confidence", () => {
   // both pillars), so market + Solana = high even with no Honeypot.is source.
   const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({ freezeAuthorityActive: false }));
   assert.equal(r.confidence, "high");
+});
+
+// ------------------------------------------------------ renderMarkdown (brief)
+console.log("renderMarkdown (human-readable brief)");
+
+function sampleReport(over: Partial<TokenReport> = {}): TokenReport {
+  return {
+    schemaVersion: "1.0",
+    input: { chain: "base", token: "0xabc" },
+    resolved: { name: cited("Demo"), symbol: cited("DEMO"), address: "0xABC", chain: "base", dexId: "uniswap", pairAddress: "0xpair" },
+    resolution: { method: "address", candidateTokens: 1, note: "" },
+    market: { priceUsd: cited(0.0000012), liquidityUsd: cited(19_313_986), volume24hUsd: cited(547_681), fdvUsd: cited(1_000_000) },
+    holders: { holderCount: cited(569276), topHolderConcentrationPct: cited(39), isMintable: cited(false) },
+    security: { ownershipRenounced: cited(true), canBlacklist: cited(true) },
+    riskScore: 25,
+    riskLevel: "medium",
+    scores: { market: { score: 0, level: "low" }, contract: { score: 0, level: "low" }, holders: { score: 25, level: "medium" } },
+    confidence: "high",
+    confidenceNote: "All pillars resolved.",
+    flags: [
+      { code: "HOLDER_CONCENTRATION_MODERATE", level: "medium", category: "holders", message: "Top holders control 39.0% of supply — moderate concentration.", source: SRC },
+      { code: "CEX_LISTED", level: "low", category: "positive", message: "Listed on Binance — legitimacy signal.", source: SRC },
+    ],
+    sources: [SRC],
+    generatedAt: "2026-07-03T00:00:00Z",
+    contentNote: "keccak256 committed on-chain.",
+    ...over,
+  };
+}
+
+function cited<T>(value: T) {
+  return { value, source: SRC };
+}
+
+test("brief carries verdict, subscores, findings and sources", () => {
+  const md = renderMarkdown(sampleReport());
+  assert.ok(md.includes("MODERATE RISK"));
+  assert.ok(md.includes("25/100"));
+  assert.ok(/confidence:\s*\*\*high\*\*/.test(md));
+  assert.ok(md.includes("Holder distribution"));
+  assert.ok(md.includes("moderate concentration"));
+  assert.ok(md.includes("Positive signals")); // CEX flag surfaced separately
+  assert.ok(md.includes("1. **test**")); // numbered source list
+});
+
+test("brief uses en-US number grouping regardless of host locale", () => {
+  const md = renderMarkdown(sampleReport());
+  assert.ok(md.includes("$19,313,986"), "liquidity should use comma-thousands grouping");
+  assert.ok(md.includes("569,276"), "holder count should use comma grouping");
+});
+
+test("critical report renders a red verdict and groups criticals first", () => {
+  const md = renderMarkdown(sampleReport({
+    riskScore: 85,
+    riskLevel: "critical",
+    flags: [
+      { code: "FREEZE_AUTHORITY_ACTIVE", level: "critical", category: "contract", message: "Freeze authority is live.", source: SRC },
+      { code: "PAIR_NEW", level: "medium", category: "market", message: "Pair is new.", source: SRC },
+    ],
+  }));
+  assert.ok(md.startsWith("# 🔴"));
+  assert.ok(md.includes("CRITICAL RISK"));
+  assert.ok(md.indexOf("CRITICAL") < md.indexOf("MEDIUM")); // severity order
+});
+
+test("brief with no risk findings states so cleanly", () => {
+  const md = renderMarkdown(sampleReport({
+    flags: [{ code: "NO_MAJOR_FLAGS", level: "low", category: "market", message: "No major red flags.", source: SRC }],
+  }));
+  assert.ok(md.includes("No material risk findings"));
 });
 
 // ----------------------------------------------------------------------- result
