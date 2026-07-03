@@ -164,6 +164,7 @@ src/
     solana.ts        Solana SPL/Token-2022 authority + holder check via GoPlus Solana (free, no key)
     risk.ts          Transparent, auditable heuristics + per-dimension subscores + confidence
     report.ts        Renders a TokenReport as a human-readable Markdown brief (`--md`)
+    http.ts          Shared fetch: timeout + retry/backoff (429/5xx) + honest TTL cache
     types.ts         Report schema (Cited<T> = value + source)
 test/
   engine.test.ts     Offline unit tests (no network, no keys) — `npm test`

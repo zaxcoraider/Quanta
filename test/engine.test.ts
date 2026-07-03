@@ -15,6 +15,7 @@ import { assessRisk } from "../src/engine/risk";
 import { parseHolders, type HoldersResult } from "../src/engine/holders";
 import { parseSolanaSecurity } from "../src/engine/solana";
 import { renderMarkdown } from "../src/engine/report";
+import { fetchJson, clearHttpCache } from "../src/engine/http";
 import type { Resolution, Source, TokenReport } from "../src/engine/types";
 
 let passed = 0;
@@ -29,6 +30,24 @@ function test(name: string, fn: () => void) {
     failed++;
     console.error(`  ✗ ${name}\n    ${e.message}`);
   }
+}
+
+// Async variant for network-layer tests (with an injected fetch stub). Collected
+// and awaited before the final summary prints.
+const pending: Promise<void>[] = [];
+function atest(name: string, fn: () => Promise<void>) {
+  pending.push(
+    fn().then(
+      () => {
+        passed++;
+        console.log(`  ✓ ${name}`);
+      },
+      (e: any) => {
+        failed++;
+        console.error(`  ✗ ${name}\n    ${e.message}`);
+      }
+    )
+  );
 }
 
 const SRC: Source = { provider: "test", url: "https://example.com", fetchedAt: "2026-01-01T00:00:00Z" };
@@ -559,6 +578,67 @@ test("brief with no risk findings states so cleanly", () => {
   assert.ok(md.includes("No material risk findings"));
 });
 
+// -------------------------------------------------------- http (retry + cache)
+console.log("fetchJson (retry / cache / timeout)");
+
+// A fetch stub that returns canned Responses per call, tracking call count.
+function stubFetch(responses: Array<() => Response | Promise<Response>>) {
+  let calls = 0;
+  const impl = (async () => {
+    const r = responses[Math.min(calls, responses.length - 1)];
+    calls++;
+    return r();
+  }) as unknown as typeof fetch;
+  return { impl, get calls() { return calls; } };
+}
+
+function json(body: any, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), { status: 200, ...init });
+}
+
+atest("retries on 5xx then succeeds", async () => {
+  clearHttpCache();
+  const stub = stubFetch([
+    () => new Response("busy", { status: 503 }),
+    () => new Response("busy", { status: 503 }),
+    () => json({ ok: 1 }),
+  ]);
+  const res = await fetchJson<{ ok: number }>("https://x.test/a", { fetchImpl: stub.impl, retryBaseMs: 1, cacheTtlMs: 0 });
+  assert.equal(res.data.ok, 1);
+  assert.equal(stub.calls, 3);
+});
+
+atest("does NOT retry a 404 (fails fast)", async () => {
+  clearHttpCache();
+  const stub = stubFetch([() => new Response("nope", { status: 404 })]);
+  await assert.rejects(
+    fetchJson("https://x.test/b", { fetchImpl: stub.impl, retryBaseMs: 1, retries: 3, cacheTtlMs: 0 }),
+    /404/
+  );
+  assert.equal(stub.calls, 1); // no retries burned on a hard 404
+});
+
+atest("throws after exhausting retries", async () => {
+  clearHttpCache();
+  const stub = stubFetch([() => new Response("busy", { status: 500 })]);
+  await assert.rejects(fetchJson("https://x.test/c", { fetchImpl: stub.impl, retryBaseMs: 1, retries: 2, cacheTtlMs: 0 }), /500/);
+  assert.equal(stub.calls, 3); // 1 + 2 retries
+});
+
+atest("cache serves a hit and preserves the original fetchedAt", async () => {
+  clearHttpCache();
+  const stub = stubFetch([() => json({ n: 1 }), () => json({ n: 2 })]);
+  const first = await fetchJson<{ n: number }>("https://x.test/d", { fetchImpl: stub.impl, cacheTtlMs: 10_000 });
+  const second = await fetchJson<{ n: number }>("https://x.test/d", { fetchImpl: stub.impl, cacheTtlMs: 10_000 });
+  assert.equal(first.cached, false);
+  assert.equal(second.cached, true);
+  assert.equal(second.data.n, 1); // served from cache, not the second response
+  assert.equal(second.fetchedAt, first.fetchedAt); // citation stays honest
+  assert.equal(stub.calls, 1); // only one network call
+});
+
 // ----------------------------------------------------------------------- result
-console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) process.exitCode = 1;
+Promise.all(pending).then(() => {
+  console.log(`\n${passed} passed, ${failed} failed`);
+  if (failed > 0) process.exitCode = 1;
+});

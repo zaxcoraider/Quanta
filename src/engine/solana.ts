@@ -11,6 +11,7 @@
 //
 // Docs: https://docs.gopluslabs.io/reference/solana-token-security-api
 
+import { fetchJson } from "./http";
 import type { HoldersResult } from "./holders";
 import type { Source } from "./types";
 
@@ -22,10 +23,6 @@ const SOLANA_CHAINS = new Set(["solana", "sol"]);
 // Base58, 32–44 chars — a Solana mint address (deliberately excludes 0x… EVM).
 function looksLikeSolanaMint(addr: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr);
-}
-
-function now(): string {
-  return new Date().toISOString();
 }
 
 /** Read a GoPlus Solana authority object {authority:[], status:"0"|"1"}. */
@@ -114,10 +111,11 @@ export async function checkSolanaSecurity(
 
   const apiUrl = `${API}?contract_addresses=${address}`;
   let data: any;
+  let fetchedAt: string;
   try {
-    const res = await fetch(apiUrl, { headers: { accept: "application/json" } });
-    if (!res.ok) return null;
-    data = await res.json();
+    const res = await fetchJson<any>(apiUrl, { retries: 1 });
+    data = res.data;
+    fetchedAt = res.fetchedAt;
   } catch {
     return null;
   }
@@ -127,8 +125,8 @@ export async function checkSolanaSecurity(
     provider: "GoPlus Labs",
     // Re-fetchable Solana security endpoint — a buyer (human or agent) can pull
     // the same JSON to confirm every authority/holder figure we cite.
-    url: `${API}?contract_addresses=${address}`,
-    fetchedAt: now(),
+    url: apiUrl,
+    fetchedAt,
   };
 
   if (!entry) return { result: { found: false }, source };

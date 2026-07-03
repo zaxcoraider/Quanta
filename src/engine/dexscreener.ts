@@ -5,6 +5,7 @@
 //
 // Docs: https://docs.dexscreener.com/api/reference
 
+import { fetchJson } from "./http";
 import type { Resolution, Source } from "./types";
 
 const BASE = "https://api.dexscreener.com";
@@ -24,16 +25,10 @@ export interface DexPair {
   pairCreatedAt?: number; // ms epoch
 }
 
-function now(): string {
-  return new Date().toISOString();
-}
-
-async function getJson(url: string): Promise<any> {
-  const res = await fetch(url, { headers: { accept: "application/json" } });
-  if (!res.ok) {
-    throw new Error(`DexScreener ${res.status} for ${url}`);
-  }
-  return res.json();
+// DexScreener is the one required source, so it gets a couple of retries.
+async function getJson(url: string): Promise<{ data: any; fetchedAt: string }> {
+  const { data, fetchedAt } = await fetchJson<any>(url, { retries: 2 });
+  return { data, fetchedAt };
 }
 
 /** One candidate token (grouped by contract address) during symbol resolution. */
@@ -123,15 +118,18 @@ export async function resolvePair(
 
   let pairs: DexPair[] = [];
   let url: string;
+  let fetchedAt: string;
 
   if (isAddress) {
     url = `${BASE}/latest/dex/tokens/${token}`;
-    const data = await getJson(url);
-    pairs = (data?.pairs ?? []) as DexPair[];
+    const res = await getJson(url);
+    pairs = (res.data?.pairs ?? []) as DexPair[];
+    fetchedAt = res.fetchedAt;
   } else {
     url = `${BASE}/latest/dex/search?q=${encodeURIComponent(token)}`;
-    const data = await getJson(url);
-    pairs = (data?.pairs ?? []) as DexPair[];
+    const res = await getJson(url);
+    pairs = (res.data?.pairs ?? []) as DexPair[];
+    fetchedAt = res.fetchedAt;
   }
 
   if (pairs.length === 0) {
@@ -188,7 +186,7 @@ export async function resolvePair(
       provider: "DexScreener",
       // Cite the specific pair page so the buyer can eyeball the same numbers.
       url: pair.url || url,
-      fetchedAt: now(),
+      fetchedAt,
     },
   };
 }

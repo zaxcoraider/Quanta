@@ -6,6 +6,7 @@
 //
 // Docs: https://docs.honeypot.is/  (v2 endpoint used below)
 
+import { fetchJson } from "./http";
 import type { Source } from "./types";
 
 const API = "https://api.honeypot.is/v2/IsHoneypot";
@@ -39,10 +40,6 @@ export interface HoneypotResult {
   riskLabel?: string;
 }
 
-function now(): string {
-  return new Date().toISOString();
-}
-
 function num(x: unknown): number | undefined {
   const n = Number(x);
   return Number.isFinite(n) ? n : undefined;
@@ -64,10 +61,12 @@ export async function checkHoneypot(
 
   const apiUrl = `${API}?address=${address}&chainID=${chainId}`;
   let data: any;
+  let fetchedAt: string;
   try {
-    const res = await fetch(apiUrl, { headers: { accept: "application/json" } });
-    if (!res.ok) return null;
-    data = await res.json();
+    // Optional enrichment: fewer retries, and any failure falls back to null.
+    const res = await fetchJson<any>(apiUrl, { retries: 1 });
+    data = res.data;
+    fetchedAt = res.fetchedAt;
   } catch {
     return null;
   }
@@ -91,7 +90,7 @@ export async function checkHoneypot(
       // Human-viewable page that re-runs the same simulation, so a buyer can
       // independently confirm the honeypot/tax numbers we cite.
       url: `https://honeypot.is/?address=${address}&chain=${chain.toLowerCase()}`,
-      fetchedAt: now(),
+      fetchedAt,
     },
   };
 }

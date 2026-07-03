@@ -8,6 +8,7 @@
 //
 // Docs: https://docs.gopluslabs.io/reference/token-security-api
 
+import { fetchJson } from "./http";
 import type { Source } from "./types";
 
 const API = "https://api.gopluslabs.io/api/v1/token_security";
@@ -114,10 +115,6 @@ export interface HoldersResult {
   found: boolean;
 }
 
-function now(): string {
-  return new Date().toISOString();
-}
-
 /** Parse GoPlus tri-state boolean strings ("1"/"0"/"") into boolean | undefined. */
 function flag(x: unknown): boolean | undefined {
   if (x === undefined || x === null || x === "") return undefined;
@@ -166,10 +163,11 @@ export async function checkHolders(
 
   const apiUrl = `${API}/${chainId}?contract_addresses=${address}`;
   let data: any;
+  let fetchedAt: string;
   try {
-    const res = await fetch(apiUrl, { headers: { accept: "application/json" } });
-    if (!res.ok) return null;
-    data = await res.json();
+    const res = await fetchJson<any>(apiUrl, { retries: 1 });
+    data = res.data;
+    fetchedAt = res.fetchedAt;
   } catch {
     return null;
   }
@@ -182,7 +180,7 @@ export async function checkHolders(
     // Human-viewable page that shows the same security breakdown, so a buyer
     // can independently confirm the holder/ownership figures we cite.
     url: `https://gopluslabs.io/token-security/${chainId}/${address}`,
-    fetchedAt: now(),
+    fetchedAt,
   };
 
   if (!entry) {
