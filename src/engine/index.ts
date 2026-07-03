@@ -13,6 +13,11 @@ function cite<T>(value: T, source: Source): Cited<T> {
   return { value, source };
 }
 
+/** cite() a value only when it's defined, else omit the field entirely. */
+function citeOpt<T>(value: T | undefined, source: Source): Cited<T> | undefined {
+  return value !== undefined ? cite(value, source) : undefined;
+}
+
 function dedupeSources(sources: Source[]): Source[] {
   const seen = new Set<string>();
   const out: Source[] = [];
@@ -53,7 +58,13 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
   const liquidityUsd = pair.liquidity?.usd ?? 0;
   const volume24hUsd = pair.volume?.h24 ?? 0;
 
-  const { flags, score, level } = assessRisk(pair, source, honeypot, resolution, holders);
+  const { flags, score, level, scores, confidence, confidenceNote } = assessRisk(
+    pair,
+    source,
+    honeypot,
+    resolution,
+    holders
+  );
 
   const base: Omit<TokenReport, "summary"> = {
     schemaVersion: "1.0",
@@ -137,8 +148,32 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
                 : undefined,
           }
         : undefined,
+    security:
+      holders && holders.result.found
+        ? {
+            ownershipRenounced: citeOpt(holders.result.ownershipRenounced, holders.source),
+            isProxy: citeOpt(holders.result.isProxy, holders.source),
+            selfdestruct: citeOpt(holders.result.selfdestruct, holders.source),
+            externalCall: citeOpt(holders.result.externalCall, holders.source),
+            transferPausable: citeOpt(holders.result.transferPausable, holders.source),
+            canBlacklist: citeOpt(holders.result.canBlacklist, holders.source),
+            isWhitelisted: citeOpt(holders.result.isWhitelisted, holders.source),
+            ownerCanChangeBalance: citeOpt(holders.result.ownerCanChangeBalance, holders.source),
+            slippageModifiable: citeOpt(holders.result.slippageModifiable, holders.source),
+            tradingCooldown: citeOpt(holders.result.tradingCooldown, holders.source),
+            cannotSellAll: citeOpt(holders.result.cannotSellAll, holders.source),
+            cannotBuy: citeOpt(holders.result.cannotBuy, holders.source),
+            creatorPriorHoneypot: citeOpt(holders.result.creatorPriorHoneypot, holders.source),
+            goplusIsHoneypot: citeOpt(holders.result.goplusIsHoneypot, holders.source),
+            cexListed: citeOpt(holders.result.cexListed, holders.source),
+            cexList: citeOpt(holders.result.cexList, holders.source),
+          }
+        : undefined,
     riskScore: score,
     riskLevel: level,
+    scores,
+    confidence,
+    confidenceNote,
     flags,
     sources: dedupeSources([
       source,

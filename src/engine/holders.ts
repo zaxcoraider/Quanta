@@ -59,6 +59,41 @@ export interface HoldersResult {
   hiddenOwner?: boolean;
   /** Source code is verified/open. undefined = unknown. */
   isOpenSource?: boolean;
+
+  // ---- Contract-capability surface -------------------------------------------
+  /** Ownership is effectively renounced (no active owner able to use owner powers). */
+  ownershipRenounced?: boolean;
+  /** Upgradeable proxy — logic can be swapped even post-launch. */
+  isProxy?: boolean;
+  /** Contract can self-destruct. */
+  selfdestruct?: boolean;
+  /** Contract makes external calls (dependency/attack surface). */
+  externalCall?: boolean;
+  /** Owner can pause transfers (freeze holders). Owner-gated. */
+  transferPausable?: boolean;
+  /** Owner can blacklist addresses (block selling). Owner-gated. */
+  canBlacklist?: boolean;
+  /** Only whitelisted addresses can trade. Owner-gated. */
+  isWhitelisted?: boolean;
+  /** Owner can arbitrarily change balances. Owner-gated, severe. */
+  ownerCanChangeBalance?: boolean;
+  /** Trading slippage/tax can be modified. Owner-gated. */
+  slippageModifiable?: boolean;
+  /** Enforced cooldown between trades. */
+  tradingCooldown?: boolean;
+  /** Holders cannot sell 100% of their position. */
+  cannotSellAll?: boolean;
+  /** Token cannot be bought (trading closed / gated). */
+  cannotBuy?: boolean;
+  /** The creator address previously deployed a known honeypot. */
+  creatorPriorHoneypot?: boolean;
+  /** GoPlus's own honeypot determination (cross-checks Honeypot.is). */
+  goplusIsHoneypot?: boolean;
+  /** Listed on a centralized exchange — strong legitimacy signal. */
+  cexListed?: boolean;
+  /** Which CEXs, when known. */
+  cexList?: string[];
+
   /** GoPlus actually returned data for this token. */
   found: boolean;
 }
@@ -157,6 +192,16 @@ export function parseHolders(entry: any): HoldersResult {
     .filter((l) => Number(l?.is_locked) === 1 || /burn|lock|dead/.test(String(l?.tag ?? "").toLowerCase()))
     .reduce((sum, l) => sum + (pct(l.percent) ?? 0), 0);
 
+  const canTakeBack = flag(entry?.can_take_back_ownership);
+  const hidden = flag(entry?.hidden_owner);
+  const ownershipRenounced = deriveRenounced(entry?.owner_address, canTakeBack, hidden);
+
+  // GoPlus surfaces CEX listing as { listed: "1", cex_list: [...] }.
+  const cex = entry?.is_in_cex;
+  const cexListed = cex && typeof cex === "object" ? flag(cex.listed) : flag(cex);
+  const cexList: string[] | undefined =
+    cex && Array.isArray(cex.cex_list) ? cex.cex_list.filter((x: any) => typeof x === "string") : undefined;
+
   return {
     found: true,
     holderCount: toInt(entry?.holder_count),
@@ -167,8 +212,43 @@ export function parseHolders(entry: any): HoldersResult {
     ownerPercentPct: pct(entry?.owner_percent),
     creatorPercentPct: pct(entry?.creator_percent),
     isMintable: flag(entry?.is_mintable),
-    canTakeBackOwnership: flag(entry?.can_take_back_ownership),
-    hiddenOwner: flag(entry?.hidden_owner),
+    canTakeBackOwnership: canTakeBack,
+    hiddenOwner: hidden,
     isOpenSource: flag(entry?.is_open_source),
+
+    ownershipRenounced,
+    isProxy: flag(entry?.is_proxy),
+    selfdestruct: flag(entry?.selfdestruct),
+    externalCall: flag(entry?.external_call),
+    transferPausable: flag(entry?.transfer_pausable),
+    canBlacklist: flag(entry?.is_blacklisted),
+    isWhitelisted: flag(entry?.is_whitelisted),
+    ownerCanChangeBalance: flag(entry?.owner_change_balance),
+    // GoPlus splits this into a global and a per-address variant; either counts.
+    slippageModifiable: flag(entry?.slippage_modifiable) || flag(entry?.personal_slippage_modifiable),
+    tradingCooldown: flag(entry?.trading_cooldown),
+    cannotSellAll: flag(entry?.cannot_sell_all),
+    cannotBuy: flag(entry?.cannot_buy),
+    creatorPriorHoneypot: flag(entry?.honeypot_with_same_creator),
+    goplusIsHoneypot: flag(entry?.is_honeypot),
+    cexListed,
+    cexList: cexList && cexList.length > 0 ? cexList : undefined,
   };
+}
+
+// Ownership counts as renounced only when the owner address is null/burn AND the
+// contract can't reclaim ownership AND there's no hidden owner. This is what
+// keeps latent owner-only powers (blacklist, pausable, mint) from false-flagging
+// a properly renounced token like PEPE.
+function deriveRenounced(
+  ownerAddress: unknown,
+  canTakeBack: boolean | undefined,
+  hiddenOwner: boolean | undefined
+): boolean | undefined {
+  if (ownerAddress === undefined || ownerAddress === null || ownerAddress === "") return undefined;
+  const owner = String(ownerAddress).toLowerCase();
+  const ownerNull = /^0x0{40}$/.test(owner) || /0*dead$/.test(owner);
+  if (!ownerNull) return false;
+  if (canTakeBack === true || hiddenOwner === true) return false;
+  return true;
 }

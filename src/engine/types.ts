@@ -38,12 +38,29 @@ export interface Resolution {
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 
+/**
+ * Which dimension a flag belongs to, so the score can be broken down per
+ * category instead of collapsing to a single opaque number. "positive" carries
+ * legitimacy signals (e.g. CEX listing) that argue *against* risk.
+ */
+export type FlagCategory = "market" | "contract" | "holders" | "resolution" | "positive";
+
 export interface RiskFlag {
   code: string;
   level: RiskLevel;
+  category: FlagCategory;
   message: string;
   source?: Source;
 }
+
+/** A 0..100 risk score plus its bucketed level, for one category. */
+export interface CategoryScore {
+  score: number;
+  level: RiskLevel;
+}
+
+/** How much of the report's evidence base actually resolved. */
+export type Confidence = "high" | "medium" | "low";
 
 export interface TokenReport {
   schemaVersion: "1.0";
@@ -98,6 +115,31 @@ export interface TokenReport {
     isOpenSource?: Cited<boolean>;
   };
   /**
+   * Contract-capability surface (EVM only, via GoPlus Labs). The dangerous
+   * powers a token contract *retains* — distinct from how it currently behaves.
+   * Owner-gated powers (pausable, blacklist, balance-change…) are only live when
+   * `ownershipRenounced` is false, so a renounced token isn't penalised for
+   * dormant code. `cexListed` is a legitimacy signal, not a risk.
+   */
+  security?: {
+    ownershipRenounced?: Cited<boolean>;
+    isProxy?: Cited<boolean>;
+    selfdestruct?: Cited<boolean>;
+    externalCall?: Cited<boolean>;
+    transferPausable?: Cited<boolean>;
+    canBlacklist?: Cited<boolean>;
+    isWhitelisted?: Cited<boolean>;
+    ownerCanChangeBalance?: Cited<boolean>;
+    slippageModifiable?: Cited<boolean>;
+    tradingCooldown?: Cited<boolean>;
+    cannotSellAll?: Cited<boolean>;
+    cannotBuy?: Cited<boolean>;
+    creatorPriorHoneypot?: Cited<boolean>;
+    goplusIsHoneypot?: Cited<boolean>;
+    cexListed?: Cited<boolean>;
+    cexList?: Cited<string[]>;
+  };
+  /**
    * A2A enrichment annex: the deliverable of ANOTHER CAP agent this agent
    * hired (and paid) as part of fulfilling the order. contentHash is the
    * upstream order's own on-chain commitment, so the chain of custody is
@@ -111,8 +153,25 @@ export interface TokenReport {
     deliverable: unknown;
     source: Source;
   };
-  riskScore: number; // 0 (safe) .. 100 (critical)
+  riskScore: number; // 0 (safe) .. 100 (critical) — overall, across all signals
   riskLevel: RiskLevel;
+  /**
+   * Per-dimension breakdown so buyers see WHERE the risk sits, not just a single
+   * number. Each is scored independently from that category's flags.
+   */
+  scores: {
+    market: CategoryScore;
+    contract: CategoryScore;
+    holders: CategoryScore;
+  };
+  /**
+   * How complete the evidence base was. "high" = all three sources resolved;
+   * lower when the contract sim and/or holder data were unavailable (e.g.
+   * non-EVM chain), so a "low" overall score with "low" confidence is not the
+   * same as a vetted clean bill of health.
+   */
+  confidence: Confidence;
+  confidenceNote: string;
   flags: RiskFlag[];
   /** Optional natural-language analyst summary (present only if Claude layer enabled). */
   summary?: string;

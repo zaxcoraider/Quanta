@@ -25,14 +25,30 @@ degrading gracefully on non-EVM chains:
    turnover, FDV vs liquidity).
 2. **Contract behavior** — an on-chain buy/sell simulation via Honeypot.is
    (honeypot / unsellable detection + real buy/sell/transfer taxes, EVM chains).
-3. **Holder distribution & ownership** — GoPlus Labs (concentration among
-   *dumpable non-contract wallets*, residual owner/creator holdings, and retained
-   authorities: mintable, ownership take-back, hidden owner, unverified source).
+3. **Holder distribution + contract-capability surface** — GoPlus Labs.
+   *Distribution:* concentration among *dumpable non-contract wallets*, residual
+   owner/creator holdings, LP-lock share. *Capabilities:* the dangerous powers the
+   contract retains — mintable, pausable transfers, address blacklist, arbitrary
+   balance rewrite, upgradeable proxy, self-destruct, ownership take-back, hidden
+   owner, whitelist gating, modifiable slippage, "creator previously shipped a
+   honeypot", and more. Plus **CEX-listing** as a positive legitimacy signal.
 
-Concentration deliberately excludes contract holders (protocols, bridges, LP
-pools, lockers) and locked/burned supply, so blue chips like WETH don't false-flag
-as concentrated — it isolates the share that actually maps to single-wallet dump
-risk.
+Two design choices keep this from false-flagging legitimate tokens:
+
+- **Concentration excludes contract holders** (protocols, bridges, LP pools,
+  lockers) and locked/burned supply, so blue chips like WETH don't read as
+  concentrated — it isolates the share that maps to single-wallet dump risk.
+- **Owner-gated powers are ownership-aware.** A blacklist or pause function is
+  only a live threat while an owner can call it, so those flags are suppressed
+  when ownership is verifiably renounced (e.g. PEPE retains a blacklist function
+  but is renounced → not flagged). Code-level dangers (self-destruct, prior-
+  honeypot deployer) fire regardless.
+
+Every report carries an **overall risk score plus per-dimension subscores**
+(market / contract / holders) so buyers see *where* the risk sits, and a
+**confidence** level reflecting how many of the three sources actually resolved —
+so a low score on a non-EVM chain (market data only) isn't mistaken for a clean
+bill of health.
 
 ## What the buyer receives
 
@@ -66,9 +82,24 @@ risk.
     "hiddenOwner":                { "value": false,  "source": { ... } },
     "isOpenSource":               { "value": true,   "source": { ... } }
   },
-  "riskScore": 45,
+  "security": {                              // EVM only — contract-capability surface (GoPlus)
+    "ownershipRenounced":  { "value": true,  "source": { ... } },  // owner-gated flags suppressed when true
+    "canBlacklist":        { "value": true,  "source": { ... } },  // present but dormant → not flagged
+    "selfdestruct":        { "value": false, "source": { ... } },
+    "isProxy":             { "value": false, "source": { ... } },
+    "cexListed":           { "value": true,  "source": { ... } },  // positive legitimacy signal
+    "cexList":             { "value": ["Binance", "Coinbase"], "source": { ... } }
+  },
+  "riskScore": 45,                           // overall, across all dimensions
   "riskLevel": "high",
-  "flags": [ { "code": "LIQUIDITY_LOW", "level": "high", "message": "...", "source": { ... } } ],
+  "scores": {                                // per-dimension breakdown — WHERE the risk sits
+    "market":   { "score": 45, "level": "high" },
+    "contract": { "score": 0,  "level": "low" },
+    "holders":  { "score": 25, "level": "medium" }
+  },
+  "confidence": "high",                      // how many of the 3 sources resolved
+  "confidenceNote": "All three sources resolved (market, on-chain simulation, holder/contract data).",
+  "flags": [ { "code": "LIQUIDITY_LOW", "level": "high", "category": "market", "message": "...", "source": { ... } } ],
   "upstream": {                              // optional A2A annex — see below
     "serviceId": "svc_..", "orderId": "ord_..",
     "contentHash": "0x..",                   // the UPSTREAM order's own on-chain proof

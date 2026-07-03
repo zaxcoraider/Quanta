@@ -298,6 +298,113 @@ test("holders unavailable (null) adds no holder flags and cannot crash", () => {
   assert.ok(!r.flags.some((f) => f.code.startsWith("HOLDER_") || f.code === "OWNERSHIP_TAKEBACK"));
 });
 
+test("ownership renouncement derivation (parseHolders)", () => {
+  const zero = "0x0000000000000000000000000000000000000000";
+  assert.equal(parseHolders({ holders: [], owner_address: zero, can_take_back_ownership: "0", hidden_owner: "0" }).ownershipRenounced, true);
+  assert.equal(parseHolders({ holders: [], owner_address: "0x" + "a".repeat(40) }).ownershipRenounced, false);
+  assert.equal(parseHolders({ holders: [], owner_address: zero, can_take_back_ownership: "1" }).ownershipRenounced, false);
+  assert.equal(parseHolders({ holders: [] }).ownershipRenounced, undefined); // no owner_address
+});
+
+test("CEX listing + capability booleans parse (parseHolders)", () => {
+  const r = parseHolders({
+    holders: [],
+    is_in_cex: { listed: "1", cex_list: ["Binance", "Coinbase"] },
+    selfdestruct: "1",
+    is_proxy: "0",
+    transfer_pausable: "1",
+    honeypot_with_same_creator: "1",
+  });
+  assert.equal(r.cexListed, true);
+  assert.deepEqual(r.cexList, ["Binance", "Coinbase"]);
+  assert.equal(r.selfdestruct, true);
+  assert.equal(r.isProxy, false);
+  assert.equal(r.transferPausable, true);
+  assert.equal(r.creatorPriorHoneypot, true);
+});
+
+// ------------------------------------------------- assessRisk (contract capability)
+console.log("assessRisk (contract-capability signals)");
+
+const HEALTHY = () => pair({ liq: 50_000_000, ageDays: 900 });
+
+test("owner-gated powers are suppressed when ownership is renounced", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({
+    ownershipRenounced: true,
+    canBlacklist: true,
+    transferPausable: true,
+    isMintable: true,
+    ownerCanChangeBalance: true,
+  }));
+  const codes = r.flags.map((f) => f.code);
+  assert.ok(!codes.includes("BLACKLIST_CAPABILITY"));
+  assert.ok(!codes.includes("PAUSABLE_TRANSFERS"));
+  assert.ok(!codes.includes("MINT_AUTHORITY_ENABLED"));
+  assert.ok(!codes.includes("OWNER_CAN_CHANGE_BALANCE"));
+});
+
+test("owner-gated powers fire when ownership is NOT renounced", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({
+    ownershipRenounced: false,
+    canBlacklist: true,
+    ownerCanChangeBalance: true,
+  }));
+  const codes = r.flags.map((f) => f.code);
+  assert.ok(codes.includes("BLACKLIST_CAPABILITY"));
+  assert.ok(r.flags.some((f) => f.code === "OWNER_CAN_CHANGE_BALANCE" && f.level === "critical"));
+});
+
+test("unknown renouncement is treated conservatively (powers fire)", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({ canBlacklist: true })); // renounced undefined
+  assert.ok(r.flags.some((f) => f.code === "BLACKLIST_CAPABILITY"));
+});
+
+test("always-on powers fire regardless of renouncement", () => {
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, holders({
+    ownershipRenounced: true,
+    selfdestruct: true,
+    creatorPriorHoneypot: true,
+  }));
+  const codes = r.flags.map((f) => f.code);
+  assert.ok(codes.includes("SELF_DESTRUCT"));
+  assert.ok(codes.includes("CREATOR_PRIOR_HONEYPOT"));
+});
+
+test("GoPlus honeypot fires as cross-source catch, but not when Honeypot.is already flagged it", () => {
+  const solo = assessRisk(HEALTHY(), SRC, null, undefined, holders({ goplusIsHoneypot: true }));
+  assert.ok(solo.flags.some((f) => f.code === "GOPLUS_HONEYPOT"));
+  const dup = assessRisk(HEALTHY(), SRC, { result: { isHoneypot: true, simulationSuccess: true }, source: SRC }, undefined, holders({ goplusIsHoneypot: true }));
+  assert.ok(dup.flags.some((f) => f.code === "HONEYPOT_DETECTED"));
+  assert.ok(!dup.flags.some((f) => f.code === "GOPLUS_HONEYPOT"));
+});
+
+test("CEX listing is a positive flag and never raises the score", () => {
+  const r = assessRisk(HEALTHY(), SRC, { result: { isHoneypot: false, buyTaxPct: 0, sellTaxPct: 0, simulationSuccess: true }, source: SRC }, undefined, holders({ cexListed: true, cexList: ["Binance"] }));
+  const cex = r.flags.find((f) => f.code === "CEX_LISTED");
+  assert.ok(cex && cex.category === "positive");
+  assert.equal(r.level, "low"); // positive flag doesn't push it up
+  assert.equal(r.scores.contract.score, 0);
+});
+
+// ------------------------------------------------------ assessRisk (scores + confidence)
+console.log("assessRisk (subscores + confidence)");
+
+test("subscores isolate the offending dimension", () => {
+  const r = assessRisk(HEALTHY(), SRC, { result: { isHoneypot: false, buyTaxPct: 0, sellTaxPct: 0, simulationSuccess: true }, source: SRC }, undefined, holders({ topHolderConcentrationPct: 75 }));
+  assert.equal(r.scores.holders.level, "critical");
+  assert.equal(r.scores.market.score, 0);
+  assert.equal(r.scores.contract.score, 0);
+});
+
+test("confidence reflects how many sources resolved", () => {
+  const hp = { result: { isHoneypot: false, simulationSuccess: true }, source: SRC };
+  assert.equal(assessRisk(HEALTHY(), SRC, hp, undefined, holders({})).confidence, "high"); // 3 sources
+  assert.equal(assessRisk(HEALTHY(), SRC, hp, undefined, null).confidence, "medium"); // 2 sources
+  assert.equal(assessRisk(HEALTHY(), SRC, null, undefined, null).confidence, "low"); // market only
+  // A failed simulation does not count toward confidence.
+  assert.equal(assessRisk(HEALTHY(), SRC, { result: { isHoneypot: false, simulationSuccess: false }, source: SRC }, undefined, null).confidence, "low");
+});
+
 // ----------------------------------------------------------------------- result
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exitCode = 1;
