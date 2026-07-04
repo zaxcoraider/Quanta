@@ -184,8 +184,12 @@ export async function resolvePair(
     resolution,
     source: {
       provider: "DexScreener",
-      // Cite the specific pair page so the buyer can eyeball the same numbers.
-      url: pair.url || url,
+      // Cite the exact API endpoint we fetched — machine-re-fetchable JSON that
+      // any buyer (human OR another agent) can hit to reproduce these numbers,
+      // cross-checking the exact pool via resolved.pairAddress. The human pair
+      // page (dexscreener.com/...) bot-blocks (HTTP 403) and is JS-rendered, so
+      // it is not a verifiable citation; the API is.
+      url,
       fetchedAt,
     },
   };

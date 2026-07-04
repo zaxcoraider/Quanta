@@ -87,9 +87,11 @@ export async function checkHoneypot(
     result,
     source: {
       provider: "Honeypot.is",
-      // Human-viewable page that re-runs the same simulation, so a buyer can
-      // independently confirm the honeypot/tax numbers we cite.
-      url: `https://honeypot.is/?address=${address}&chain=${chain.toLowerCase()}`,
+      // Cite the exact API endpoint we fetched — machine-re-fetchable JSON that
+      // any buyer (human OR another agent) can hit to reproduce these numbers.
+      // The human page (honeypot.is) bot-blocks and is JS-rendered, so it is not
+      // a verifiable citation; the API is.
+      url: apiUrl,
       fetchedAt,
     },
   };

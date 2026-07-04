@@ -9,12 +9,14 @@
     "provider": "ts-node src/provider.ts",
     "demo": "ts-node src/requester-demo.ts",
     "research": "ts-node src/cli.ts",
+    "verify": "ts-node src/verify.ts",
     "test": "ts-node test/engine.test.ts",
     "start": "node dist/provider.js"
   },
   "dependencies": {
     "@croo-network/sdk": "^0.2.1",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "js-sha3": "^0.9.3"
   },
   "optionalDependencies": {
     "@anthropic-ai/sdk": "^0.30.0"

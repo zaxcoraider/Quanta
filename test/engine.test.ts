@@ -17,6 +17,9 @@ import { parseSolanaSecurity } from "../src/engine/solana";
 import { renderMarkdown } from "../src/engine/report";
 import { fetchJson, clearHttpCache } from "../src/engine/http";
 import { hireUpstream, _activeHireCount } from "../src/upstream";
+import { collectSources, matchContentHash, normalizeHash } from "../src/verify";
+import { keccak256 } from "js-sha3";
+import { createHash } from "node:crypto";
 import type { Resolution, Source, TokenReport } from "../src/engine/types";
 
 let passed = 0;
@@ -754,6 +757,52 @@ atest("shared stream keeps six listeners across many hires (no leak)", async () 
   }
   assert.equal(stream.onCount(), 6, "exactly six listeners, regardless of hire count");
   assert.equal(_activeHireCount(), 0, "no in-flight hires left registered");
+});
+
+// ------------------------------------------------------------- verify (verifier)
+console.log("verify");
+
+test("collectSources gathers nested + deduplicates by url", () => {
+  const a: Source = { provider: "DexScreener", url: "https://dex/x", fetchedAt: "t" };
+  const b: Source = { provider: "GoPlus", url: "https://goplus/y", fetchedAt: "t" };
+  const report = {
+    resolved: { name: { value: "X", source: a } },
+    market: { priceUsd: { value: 1, source: a } }, // same url as resolved -> deduped
+    holders: { holderCount: { value: 9, source: b } },
+    flags: [{ code: "F", source: b }], // duplicate url again
+    sources: [a, b],
+  };
+  const got = collectSources(report).map((s) => s.url).sort();
+  assert.deepEqual(got, ["https://dex/x", "https://goplus/y"]);
+});
+
+test("collectSources finds a nested source even if absent from sources[]", () => {
+  const nested: Source = { provider: "Honeypot.is", url: "https://hp/z", fetchedAt: "t" };
+  const report = { contract: { isHoneypot: { value: false, source: nested } }, sources: [] };
+  assert.deepEqual(collectSources(report).map((s) => s.url), ["https://hp/z"]);
+});
+
+test("matchContentHash detects keccak256 with 0x prefix", () => {
+  const payload = JSON.stringify({ riskScore: 10, sources: [] });
+  const hash = "0x" + keccak256(payload);
+  assert.equal(matchContentHash(payload, hash), "keccak256");
+});
+
+test("matchContentHash detects sha256 without prefix", () => {
+  const payload = "hello-quanta";
+  const hash = createHash("sha256").update(payload, "utf8").digest("hex");
+  assert.equal(matchContentHash(payload, hash), "sha256");
+});
+
+test("matchContentHash returns null on a tampered payload", () => {
+  const payload = JSON.stringify({ riskScore: 10 });
+  const hash = "0x" + keccak256(payload);
+  assert.equal(matchContentHash(payload + " ", hash), null); // one extra byte
+});
+
+test("normalizeHash strips 0x and lowercases", () => {
+  assert.equal(normalizeHash("0xABCdef"), "abcdef");
+  assert.equal(normalizeHash("  ABC  "), "abc");
 });
 
 // ----------------------------------------------------------------------- result

@@ -185,6 +185,14 @@ npm run research -- ethereum PEPE
 npm run research -- solana BONK              # Solana coverage (mint/freeze authority…)
 npm run research -- ethereum PEPE --md       # human-readable Markdown brief instead of JSON
 
+# 1b) "Don't trust — verify." Independently audit any deliverable with zero keys:
+#     re-fetches EVERY cited source and (for a CAP delivery) recomputes the
+#     on-chain content hash to prove the report is byte-identical to what settled.
+npm run research -- base 0x4200000000000000000000000000000000000006 > weth.json
+npm run verify  -- weth.json                 # raw report: checks every citation is live
+# Given a CAP delivery {deliverableSchema, contentHash} it also proves tamper-evidence:
+#   ✅ Deliverable is byte-identical to the on-chain commitment (keccak256).
+
 # 2) Register the provider agent + service in the dashboard (see below), put the
 #    CROO_SDK_KEY and CROO_SERVICE_ID in .env, then run the provider:
 npm run provider

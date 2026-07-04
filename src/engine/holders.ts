@@ -177,9 +177,11 @@ export async function checkHolders(
   const entry: any = Object.values(data?.result ?? {})[0];
   const source: Source = {
     provider: "GoPlus Labs",
-    // Human-viewable page that shows the same security breakdown, so a buyer
-    // can independently confirm the holder/ownership figures we cite.
-    url: `https://gopluslabs.io/token-security/${chainId}/${address}`,
+    // Cite the exact API endpoint we fetched — machine-re-fetchable JSON that
+    // any buyer (human OR another agent) can hit to reproduce these figures.
+    // The human page (gopluslabs.io) is JS-rendered and not a verifiable
+    // citation; the API is.
+    url: apiUrl,
     fetchedAt,
   };
 
