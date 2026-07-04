@@ -18,6 +18,7 @@ import { renderMarkdown } from "../src/engine/report";
 import { fetchJson, clearHttpCache } from "../src/engine/http";
 import { hireUpstream, _activeHireCount } from "../src/upstream";
 import { collectSources, matchContentHash, normalizeHash } from "../src/verify";
+import { buildAnalystFacts, maybeSummarize } from "../src/llm";
 import { keccak256 } from "js-sha3";
 import { createHash } from "node:crypto";
 import type { Resolution, Source, TokenReport } from "../src/engine/types";
@@ -803,6 +804,84 @@ test("matchContentHash returns null on a tampered payload", () => {
 test("normalizeHash strips 0x and lowercases", () => {
   assert.equal(normalizeHash("0xABCdef"), "abcdef");
   assert.equal(normalizeHash("  ABC  "), "abc");
+});
+
+// ----------------------------------------------------------- llm (dgrid overlay)
+console.log("llm (dgrid overlay)");
+
+const LLM_REPORT: any = {
+  resolved: {
+    name: { value: "WrappedX", source: SRC },
+    symbol: { value: "WX", source: SRC },
+    chain: "base",
+    address: "0x",
+    dexId: "d",
+    pairAddress: "0xp",
+  },
+  market: {
+    priceUsd: { value: 1.5, source: SRC },
+    liquidityUsd: { value: 1000, source: SRC },
+    volume24hUsd: { value: 500, source: SRC },
+  },
+  riskScore: 10,
+  riskLevel: "low",
+  confidence: "high",
+  scores: {
+    market: { score: 0, level: "low" },
+    contract: { score: 0, level: "low" },
+    holders: { score: 0, level: "low" },
+  },
+  flags: [{ code: "F1", level: "low", category: "market", message: "thin liquidity" }],
+  sources: [SRC],
+};
+
+test("buildAnalystFacts extracts only the grounding fields", () => {
+  const f = buildAnalystFacts(LLM_REPORT);
+  assert.equal(f.token, "WrappedX (WX)");
+  assert.equal(f.chain, "base");
+  assert.equal(f.priceUsd, 1.5);
+  assert.equal(f.riskLevel, "low");
+  assert.deepEqual(f.flags, ["[low/market] thin liquidity"]);
+});
+
+atest("maybeSummarize returns undefined when no key is configured", async () => {
+  const d = process.env.DGRID_API_KEY;
+  const a = process.env.ANTHROPIC_API_KEY;
+  delete process.env.DGRID_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  const out = await maybeSummarize(LLM_REPORT, {
+    fetchImpl: (async () => {
+      throw new Error("must not fetch without a key");
+    }) as any,
+  });
+  assert.equal(out, undefined);
+  if (d) process.env.DGRID_API_KEY = d;
+  if (a) process.env.ANTHROPIC_API_KEY = a;
+});
+
+atest("maybeSummarize posts to /chat/completions with bearer auth and parses content", async () => {
+  const d = process.env.DGRID_API_KEY;
+  process.env.DGRID_API_KEY = "sk-test";
+  const stub = (async (url: string, init: any) => {
+    assert.ok(String(url).endsWith("/chat/completions"), "hits chat completions");
+    assert.equal(init.headers.authorization, "Bearer sk-test", "bearer auth");
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "  Grounded brief.  " } }] }) };
+  }) as any;
+  const out = await maybeSummarize(LLM_REPORT, { fetchImpl: stub });
+  assert.equal(out, "Grounded brief.");
+  if (d) process.env.DGRID_API_KEY = d;
+  else delete process.env.DGRID_API_KEY;
+});
+
+atest("maybeSummarize degrades to undefined on a non-200 response", async () => {
+  const d = process.env.DGRID_API_KEY;
+  process.env.DGRID_API_KEY = "sk-test";
+  const out = await maybeSummarize(LLM_REPORT, {
+    fetchImpl: (async () => ({ ok: false, json: async () => ({}) })) as any,
+  });
+  assert.equal(out, undefined);
+  if (d) process.env.DGRID_API_KEY = d;
+  else delete process.env.DGRID_API_KEY;
 });
 
 // ----------------------------------------------------------------------- result

@@ -7,6 +7,7 @@
 //         npm run research -- ethereum PEPE
 //         npm run research -- solana BONK --md      (human-readable brief)
 
+import "dotenv/config"; // load .env so the optional dgrid LLM overlay is picked up
 import { runResearch, validateInput } from "./engine";
 import { renderMarkdown } from "./engine/report";
 
