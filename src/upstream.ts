@@ -12,12 +12,56 @@
 //   - Strictly bounded: hard timeout so our own SLA is never endangered.
 //   - Never throws: any failure (reject, expiry, timeout, network) returns
 //     null and the base report is delivered as usual.
+//   - No listener leak: EventStream has no off(), so we attach exactly six
+//     listeners per stream ONCE and fan every event out to the set of hires
+//     currently in flight. A long-lived provider that serves thousands of
+//     orders keeps six listeners, not six-per-order.
 
 import { EventType, type AgentClient, type Event } from "@croo-network/sdk";
 import type { Source, TokenReport } from "./engine/types";
 
 type Stream = Awaited<ReturnType<AgentClient["connectWebSocket"]>>;
 export type UpstreamAnnex = NonNullable<TokenReport["upstream"]>;
+
+// One in-flight hire's reactions to each event kind. hireUpstream registers a
+// HireReactions into `activeHires` and deletes it on settle, so the set size is
+// bounded by CONCURRENT hires, never by lifetime order count.
+interface HireReactions {
+  onNegotiationRejected(ev: Event): void;
+  onNegotiationExpired(ev: Event): void;
+  onOrderCreated(ev: Event): void;
+  onOrderCompleted(ev: Event): void;
+  onOrderRejected(ev: Event): void;
+  onOrderExpired(ev: Event): void;
+}
+
+const activeHires = new Set<HireReactions>();
+
+// Streams we have already attached the six shared listeners to. A WeakSet so a
+// closed stream can be GC'd without leaking a key here.
+const wiredStreams = new WeakSet<object>();
+
+function wireStream(stream: Stream): void {
+  if (wiredStreams.has(stream)) return;
+  wiredStreams.add(stream);
+  const fan =
+    (key: keyof HireReactions) =>
+    (ev: Event): void => {
+      // Snapshot first: a hire may delete itself from the set while dispatching.
+      for (const hire of [...activeHires]) hire[key](ev);
+    };
+  stream.on(EventType.NegotiationRejected, fan("onNegotiationRejected"));
+  stream.on(EventType.NegotiationExpired, fan("onNegotiationExpired"));
+  stream.on(EventType.OrderCreated, fan("onOrderCreated"));
+  stream.on(EventType.OrderCompleted, fan("onOrderCompleted"));
+  stream.on(EventType.OrderRejected, fan("onOrderRejected"));
+  stream.on(EventType.OrderExpired, fan("onOrderExpired"));
+}
+
+/** Test-only: how many hires are currently registered on the shared stream. */
+export function _activeHireCount(): number {
+  return activeHires.size;
+}
 
 export async function hireUpstream(
   client: AgentClient,
@@ -26,9 +70,10 @@ export async function hireUpstream(
   requirements: string,
   timeoutMs: number
 ): Promise<UpstreamAnnex | null> {
-  let done = false;
+  wireStream(stream);
 
   return new Promise<UpstreamAnnex | null>((resolve) => {
+    let done = false;
     let negotiationId = "";
     let orderId = "";
 
@@ -37,10 +82,14 @@ export async function hireUpstream(
     let negotiationReady!: () => void;
     const negotiationKnown = new Promise<void>((r) => (negotiationReady = r));
 
+    // Declared up front so settle() can remove this hire from the shared set.
+    const reactions = {} as HireReactions;
+
     const settle = (annex: UpstreamAnnex | null) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
+      activeHires.delete(reactions);
       resolve(annex);
     };
 
@@ -54,20 +103,18 @@ export async function hireUpstream(
       (ev.negotiation_id && ev.negotiation_id === negotiationId) ||
       (ev.order_id && ev.order_id === orderId);
 
-    // NOTE: EventStream has no off(); the `done` flag makes stale handlers
-    // no-ops after this hire settles.
-    stream.on(EventType.NegotiationRejected, (ev) => {
+    reactions.onNegotiationRejected = (ev) => {
       if (done || !isOurs(ev)) return;
       console.warn(`   ↳ upstream ${serviceId}: negotiation rejected: ${ev.reason || ""}`);
       settle(null);
-    });
+    };
 
-    stream.on(EventType.NegotiationExpired, (ev) => {
+    reactions.onNegotiationExpired = (ev) => {
       if (done || !isOurs(ev)) return;
       settle(null);
-    });
+    };
 
-    stream.on(EventType.OrderCreated, async (ev) => {
+    reactions.onOrderCreated = async (ev) => {
       if (done || !ev.order_id || orderId) return;
       await negotiationKnown;
       let evNegotiationId = ev.negotiation_id;
@@ -87,9 +134,9 @@ export async function hireUpstream(
         console.warn(`   ↳ upstream ${serviceId}: payment failed: ${e.message}`);
         settle(null);
       }
-    });
+    };
 
-    stream.on(EventType.OrderCompleted, async (ev) => {
+    reactions.onOrderCompleted = async (ev) => {
       if (done || !ev.order_id || ev.order_id !== orderId) return;
       try {
         const delivery = await client.getDelivery(orderId);
@@ -110,17 +157,19 @@ export async function hireUpstream(
         console.warn(`   ↳ upstream ${serviceId}: could not fetch delivery: ${e.message}`);
         settle(null);
       }
-    });
+    };
 
-    stream.on(EventType.OrderRejected, (ev) => {
+    reactions.onOrderRejected = (ev) => {
       if (done || !isOurs(ev)) return;
       settle(null);
-    });
+    };
 
-    stream.on(EventType.OrderExpired, (ev) => {
+    reactions.onOrderExpired = (ev) => {
       if (done || !isOurs(ev)) return;
       settle(null);
-    });
+    };
+
+    activeHires.add(reactions);
 
     client
       .negotiateOrder({ serviceId, requirements })

@@ -16,6 +16,7 @@ import { parseHolders, type HoldersResult } from "../src/engine/holders";
 import { parseSolanaSecurity } from "../src/engine/solana";
 import { renderMarkdown } from "../src/engine/report";
 import { fetchJson, clearHttpCache } from "../src/engine/http";
+import { hireUpstream, _activeHireCount } from "../src/upstream";
 import type { Resolution, Source, TokenReport } from "../src/engine/types";
 
 let passed = 0;
@@ -635,6 +636,124 @@ atest("cache serves a hit and preserves the original fetchedAt", async () => {
   assert.equal(second.data.n, 1); // served from cache, not the second response
   assert.equal(second.fetchedAt, first.fetchedAt); // citation stays honest
   assert.equal(stub.calls, 1); // only one network call
+});
+
+// --------------------------------------------------- A2A upstream state machine
+// The upstream hire path (provider hires + pays another CAP agent mid-order) has
+// no live-CAP coverage, so we drive it here against a fake EventStream + client.
+// Every test uses UNIQUE ids because hireUpstream fans events out to a shared
+// module-global set of in-flight hires — unique ids keep tests from cross-talking.
+
+const flush = () => new Promise((r) => setTimeout(r, 5));
+
+// Minimal stand-in for the SDK EventStream. Records how many listeners were
+// attached (to prove the no-leak invariant) and lets a test emit events.
+function fakeStream() {
+  const handlers = new Map<string, Array<(ev: any) => void>>();
+  let onCount = 0;
+  return {
+    onCount: () => onCount,
+    on(type: string, h: (ev: any) => void) {
+      onCount++;
+      const a = handlers.get(type) ?? [];
+      a.push(h);
+      handlers.set(type, a);
+    },
+    onAny() {},
+    close() {},
+    err() {
+      return null;
+    },
+    emit(type: string, ev: Record<string, any>) {
+      for (const h of handlers.get(type) ?? []) h({ type, raw: {}, ...ev });
+    },
+  } as any;
+}
+
+// Fake AgentClient covering only the calls hireUpstream makes. Overridable per
+// test to simulate failures.
+function fakeClient(over: Record<string, any> = {}) {
+  return {
+    negotiateOrder: async (_req: any) => ({ negotiationId: over.negotiationId ?? "n1" }),
+    // Models the real backend: getOrder returns the TRUE negotiation id of the
+    // queried order (here by the test convention "oX" -> "nX"), so the fallback
+    // only ever matches the hire that actually owns the order — never a sibling.
+    getOrder: async (id: string) => ({ orderId: id, negotiationId: "n" + id.slice(1) }),
+    payOrder: async (_id: string) => ({ txHash: "0xpay" }),
+    getDelivery: async (_id: string) => ({
+      orderId: over.orderId ?? "o1",
+      deliverableSchema: over.deliverableSchema ?? JSON.stringify({ provider: "upstream", note: "ok" }),
+      deliverableText: over.deliverableText ?? "",
+      contentHash: over.contentHash ?? "0xcontent",
+    }),
+    ...(over.overrides ?? {}),
+  } as any;
+}
+
+const REQ = JSON.stringify({ chain: "base", token: "0x1" });
+
+atest("upstream hire settles to a cited annex on completion", async () => {
+  const stream = fakeStream();
+  const client = fakeClient({ negotiationId: "nA" });
+  const p = hireUpstream(client, stream, "svc_A", REQ, 5_000);
+  await flush(); // let negotiateOrder resolve so negotiationId is known
+  stream.emit("order_created", { order_id: "oA", negotiation_id: "nA" });
+  await flush(); // payOrder resolves, orderId is set
+  stream.emit("order_completed", { order_id: "oA" });
+  const annex = await p;
+  assert.ok(annex, "expected an annex");
+  assert.equal(annex!.serviceId, "svc_A");
+  assert.equal(annex!.orderId, "oA");
+  assert.equal(annex!.contentHash, "0xcontent");
+  assert.deepEqual(annex!.deliverable, { provider: "upstream", note: "ok" });
+  assert.equal(annex!.source.provider, "CAP service svc_A");
+});
+
+atest("upstream negotiation rejection yields null (base report unaffected)", async () => {
+  const stream = fakeStream();
+  const client = fakeClient({ negotiationId: "nB" });
+  const p = hireUpstream(client, stream, "svc_B", REQ, 5_000);
+  await flush();
+  stream.emit("order_negotiation_rejected", { negotiation_id: "nB", reason: "busy" });
+  const annex = await p;
+  assert.equal(annex, null);
+});
+
+atest("upstream hire times out without hanging", async () => {
+  const stream = fakeStream();
+  const client = fakeClient({ negotiationId: "nC" });
+  // No events emitted; the internal hard timeout must resolve it to null.
+  const annex = await hireUpstream(client, stream, "svc_C", REQ, 30);
+  assert.equal(annex, null);
+});
+
+atest("order_created without negotiation_id falls back to getOrder", async () => {
+  const stream = fakeStream();
+  const client = fakeClient({ negotiationId: "nD" });
+  const p = hireUpstream(client, stream, "svc_D", REQ, 5_000);
+  await flush();
+  // Event omits negotiation_id → hire must resolve it via getOrder and still match.
+  stream.emit("order_created", { order_id: "oD" });
+  await flush();
+  stream.emit("order_completed", { order_id: "oD" });
+  const annex = await p;
+  assert.ok(annex, "expected annex via getOrder fallback");
+  assert.equal(annex!.orderId, "oD");
+});
+
+atest("shared stream keeps six listeners across many hires (no leak)", async () => {
+  const stream = fakeStream();
+  for (let i = 0; i < 3; i++) {
+    const client = fakeClient({ negotiationId: `nL${i}` });
+    const p = hireUpstream(client, stream, `svc_L${i}`, REQ, 5_000);
+    await flush();
+    stream.emit("order_created", { order_id: `oL${i}`, negotiation_id: `nL${i}` });
+    await flush();
+    stream.emit("order_completed", { order_id: `oL${i}` });
+    assert.ok(await p, `hire ${i} should settle`);
+  }
+  assert.equal(stream.onCount(), 6, "exactly six listeners, regardless of hire count");
+  assert.equal(_activeHireCount(), 0, "no in-flight hires left registered");
 });
 
 // ----------------------------------------------------------------------- result
