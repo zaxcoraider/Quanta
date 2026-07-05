@@ -8,6 +8,8 @@
     "build": "tsc",
     "provider": "ts-node src/provider.ts",
     "demo": "ts-node src/requester-demo.ts",
+    "connect:requester": "ts-node src/connect-requester.ts",
+    "fetch:delivery": "ts-node src/fetch-delivery.ts",
     "research": "ts-node src/cli.ts",
     "verify": "ts-node src/verify.ts",
     "test": "ts-node test/engine.test.ts",

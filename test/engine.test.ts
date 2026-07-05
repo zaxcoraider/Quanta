@@ -18,6 +18,7 @@ import { renderMarkdown } from "../src/engine/report";
 import { fetchJson, clearHttpCache } from "../src/engine/http";
 import { hireUpstream, _activeHireCount } from "../src/upstream";
 import { collectSources, matchContentHash, normalizeHash } from "../src/verify";
+import { toDeliverable, renderFlag, renderSource } from "../src/provider";
 import { buildAnalystFacts, maybeSummarize } from "../src/llm";
 import { keccak256 } from "js-sha3";
 import { createHash } from "node:crypto";
@@ -882,6 +883,91 @@ atest("maybeSummarize degrades to undefined on a non-200 response", async () => 
   assert.equal(out, undefined);
   if (d) process.env.DGRID_API_KEY = d;
   else delete process.env.DGRID_API_KEY;
+});
+
+// ---- CAP deliverable schema conformance ----------------------------------
+// The registered service declares flags/sources as arrays of STRING (CAP arrays
+// only allow primitive item types). toDeliverable() must project the rich report
+// onto that schema, or the on-chain delivery is rejected (INVALID_DELIVERABLE:
+// invalid_item_type) — the exact failure seen on the first live order.
+
+const DELIVERABLE_SOURCE: Source = {
+  provider: "DexScreener",
+  url: "https://api.dexscreener.com/latest/dex/tokens/0xabc",
+  fetchedAt: "2026-07-05T00:00:00.000Z",
+};
+
+function deliverableReport(): TokenReport {
+  return {
+    schemaVersion: "1.0",
+    input: { chain: "base", token: "0xabc" },
+    resolved: {
+      name: { value: "Wrapped Ether", source: DELIVERABLE_SOURCE },
+      symbol: { value: "WETH", source: DELIVERABLE_SOURCE },
+      address: "0xabc",
+      chain: "base",
+      dexId: "uniswap",
+      pairAddress: "0xpair",
+    },
+    resolution: { method: "address", candidateTokens: 1, note: "" },
+    market: {
+      priceUsd: { value: 1696, source: DELIVERABLE_SOURCE },
+      liquidityUsd: { value: 98_500_000, source: DELIVERABLE_SOURCE },
+      volume24hUsd: { value: 1_000_000, source: DELIVERABLE_SOURCE },
+    },
+    riskScore: 10,
+    riskLevel: "low",
+    scores: {
+      market: { score: 0, level: "low" },
+      contract: { score: 0, level: "low" },
+      holders: { score: 10, level: "low" },
+    },
+    confidence: "high",
+    confidenceNote: "",
+    flags: [
+      { code: "HONEYPOT_DETECTED", level: "critical", category: "contract", message: "sim failed", source: DELIVERABLE_SOURCE },
+      { code: "SYMBOL_AMBIGUOUS", level: "medium", category: "resolution", message: "2 contracts" },
+    ],
+    sources: [DELIVERABLE_SOURCE],
+    generatedAt: "2026-07-05T00:00:00.000Z",
+    contentNote: "",
+  };
+}
+
+test("toDeliverable renders flags and sources as string[] (CAP schema conformance)", () => {
+  const d = toDeliverable(deliverableReport());
+  assert.ok(Array.isArray(d.flags) && (d.flags as unknown[]).every((f) => typeof f === "string"),
+    "flags must be an array of strings");
+  assert.ok(Array.isArray(d.sources) && (d.sources as unknown[]).every((s) => typeof s === "string"),
+    "sources must be an array of strings");
+});
+
+test("renderFlag keeps code/level/category/message and inlines a source URL when present", () => {
+  const [withSrc, noSrc] = deliverableReport().flags.map(renderFlag);
+  assert.match(withSrc, /HONEYPOT_DETECTED \| critical \| contract \| sim failed \| source: https:/);
+  assert.equal(noSrc, "SYMBOL_AMBIGUOUS | medium | resolution | 2 contracts");
+});
+
+test("renderSource is provider | url | fetchedAt", () => {
+  assert.equal(
+    renderSource(DELIVERABLE_SOURCE),
+    "DexScreener | https://api.dexscreener.com/latest/dex/tokens/0xabc | 2026-07-05T00:00:00.000Z"
+  );
+});
+
+test("deliverable stays verifiable: collectSources still re-fetches every citation", () => {
+  // Even with the top-level sources[] flattened to strings, the nested
+  // Cited.source objects remain, so an independent verifier finds the citations.
+  const found = collectSources(toDeliverable(deliverableReport()));
+  assert.equal(found.length, 1, "the one distinct source is still discoverable");
+  assert.equal(found[0].url, DELIVERABLE_SOURCE.url);
+});
+
+test("toDeliverable preserves scalar fields untouched", () => {
+  const d = toDeliverable(deliverableReport());
+  assert.equal(d.riskScore, 10);
+  assert.equal(d.riskLevel, "low");
+  assert.equal(d.confidence, "high");
 });
 
 // ----------------------------------------------------------------------- result

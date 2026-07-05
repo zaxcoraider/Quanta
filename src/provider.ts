@@ -19,7 +19,33 @@
 import { EventType, type AgentClient, type Event } from "@croo-network/sdk";
 import { providerClient, UPSTREAM_SERVICE_ID, UPSTREAM_TIMEOUT_MS } from "./config";
 import { runResearch, validateInput } from "./engine";
+import type { RiskFlag, Source, TokenReport } from "./engine/types";
 import { hireUpstream } from "./upstream";
+
+// The registered CAP service declares `flags` and `sources` as arrays of STRING
+// (CAP schema arrays only support primitive item types — string/number/boolean,
+// not object). Our internal report carries them as rich objects, so we render
+// them to strings at delivery to satisfy the on-chain deliverable schema. This
+// is lossless for verification: every citation also lives in a nested
+// `Cited.source` object (market/contract/holders/security), which verify.ts's
+// collectSources() still walks and re-fetches. Each source's URL is kept inline
+// in the string too, so the top-level list stays machine-parseable.
+export function renderFlag(f: RiskFlag): string {
+  const base = `${f.code} | ${f.level} | ${f.category} | ${f.message}`;
+  return f.source ? `${base} | source: ${f.source.url}` : base;
+}
+export function renderSource(s: Source): string {
+  return `${s.provider} | ${s.url} | ${s.fetchedAt}`;
+}
+
+/** Project a report onto the CAP deliverable schema (string[] flags/sources). */
+export function toDeliverable(report: TokenReport): Record<string, unknown> {
+  return {
+    ...report,
+    flags: report.flags.map(renderFlag),
+    sources: report.sources.map(renderSource),
+  };
+}
 
 type Stream = Awaited<ReturnType<AgentClient["connectWebSocket"]>>;
 
@@ -97,7 +123,7 @@ async function handlePaid(client: AgentClient, stream: Stream, ev: Event) {
 
     await client.deliverOrder(orderId, {
       deliverableType: "schema",
-      deliverableSchema: JSON.stringify(report),
+      deliverableSchema: JSON.stringify(toDeliverable(report)),
     });
 
     console.log(
@@ -143,7 +169,11 @@ async function main() {
   });
 }
 
-main().catch((e) => {
-  console.error("Fatal:", e);
-  process.exit(1);
-});
+// Only start the provider loop when run directly; importing (e.g. from tests)
+// exposes the pure helpers above without opening a websocket.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error("Fatal:", e);
+    process.exit(1);
+  });
+}

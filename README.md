@@ -15,8 +15,8 @@ The store already has many "DYOR / wallet-risk" bots. The differentiator here is
 **verifiability**: every factual claim in the deliverable carries a `source`
 (provider + re-fetchable URL + `fetchedAt`). Buyers — human *or* other agents —
 can independently re-check every number. Risk heuristics are transparent, not a
-black box, and a `keccak256` of the deliverable is committed on-chain by CAP at
-settlement for tamper-evidence.
+black box, and a content hash of the deliverable is committed on-chain by CAP at
+settlement, tying the report to the order that paid for it.
 
 Signals span independent, free (no-key) sources — all cited, and all degrading
 gracefully when a source doesn't cover a chain:
@@ -185,13 +185,19 @@ npm run research -- ethereum PEPE
 npm run research -- solana BONK              # Solana coverage (mint/freeze authority…)
 npm run research -- ethereum PEPE --md       # human-readable Markdown brief instead of JSON
 
-# 1b) "Don't trust — verify." Independently audit any deliverable with zero keys:
-#     re-fetches EVERY cited source and (for a CAP delivery) recomputes the
-#     on-chain content hash to prove the report is byte-identical to what settled.
+# 1b) "Don't trust — verify." Independently audit any deliverable with zero keys.
+#     Re-fetches EVERY cited source live — the core guarantee that the report is
+#     real data, not an LLM hallucination — and surfaces the on-chain commitment.
 npm run research -- base 0x4200000000000000000000000000000000000006 > weth.json
 npm run verify  -- weth.json                 # raw report: checks every citation is live
-# Given a CAP delivery {deliverableSchema, contentHash} it also proves tamper-evidence:
-#   ✅ Deliverable is byte-identical to the on-chain commitment (keccak256).
+# A real settled delivery is checked in too — audit it against the live internet:
+npm run verify  -- delivery.json
+#   ✅ Independently verified — every cited claim is live and re-fetchable.
+# (The delivery also carries CAP's on-chain contentHash. CAP re-serializes a schema
+#  deliverable server-side, so its exact hashed preimage isn't returned by getDelivery;
+#  the verifier reports the commitment honestly and relies on source liveness. When the
+#  preimage IS the delivered bytes — a text deliverable — the hash is reproduced and any
+#  tampering flips it, which the unit tests cover.)
 
 # 2) Register the provider agent + service in the dashboard (see below), put the
 #    CROO_SDK_KEY and CROO_SERVICE_ID in .env, then run the provider:
@@ -216,7 +222,7 @@ handles everything after that via `@croo-network/sdk` (v0.2.1).
 | Accept | `client.acceptNegotiation(negotiationId)` | Backend submits `createOrder` on-chain; returns `{ negotiation, order }`. |
 | Reject bad input | `client.rejectNegotiation(id, reason)` | Malformed requirements never become orders. |
 | Payment locked | event `order_paid` | Escrow in CAPVault. **Only now** do we run paid work. |
-| Deliver | `client.deliverOrder(orderId, { deliverableType: "schema", deliverableSchema })` | keccak256 committed on-chain; verification → USDC settles. |
+| Deliver | `client.deliverOrder(orderId, { deliverableType: "schema", deliverableSchema })` | Content hash committed on-chain; verification → USDC settles. `flags`/`sources` are rendered to string arrays to match the service schema (CAP arrays take primitive item types only); every citation stays re-fetchable via the nested `Cited.source` objects. |
 | Settled | event `order_completed` | Funds land in provider AA wallet. |
 
 **Requester lifecycle** (`src/requester-demo.ts`): connect the event stream
