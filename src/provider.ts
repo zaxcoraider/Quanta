@@ -94,7 +94,7 @@ export async function handleNegotiation(client: AgentClient, ev: Event) {
   }
 }
 
-async function handlePaid(client: AgentClient, stream: Stream, registry: AgentServiceEntry[], ev: Event) {
+export async function handlePaid(client: AgentClient, stream: Stream, registry: AgentServiceEntry[], ev: Event) {
   const orderId = ev.order_id;
   if (!orderId || seenPaidOrders.has(orderId)) return;
   seenPaidOrders.add(orderId);
