@@ -6,6 +6,7 @@ import { resolvePair } from "./dexscreener";
 import { checkHoneypot } from "./honeypot";
 import { checkHolders } from "./holders";
 import { checkSolanaSecurity } from "./solana";
+import { checkConsistency } from "./consistency";
 import { assessRisk } from "./risk";
 import { maybeSummarize } from "../llm";
 import type { Cited, ResearchInput, Source, TokenReport } from "./types";
@@ -54,23 +55,26 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
   //  - GoPlus Solana: holder distribution + SPL/Token-2022 authorities.
   // EVM and Solana GoPlus are mutually exclusive by chain; `holders` is whichever
   // resolved, normalised to one shape so the report/scoring are shared.
-  const [honeypot, evmHolders, solHolders] = await Promise.all([
-    checkHoneypot(input.chain, pair.baseToken.address),
-    checkHolders(input.chain, pair.baseToken.address),
-    checkSolanaSecurity(input.chain, pair.baseToken.address),
-  ]);
-  const holders = evmHolders ?? solHolders;
-
   const priceUsd = Number(pair.priceUsd ?? 0);
   const liquidityUsd = pair.liquidity?.usd ?? 0;
   const volume24hUsd = pair.volume?.h24 ?? 0;
+
+  const [honeypot, evmHolders, solHolders, consistency] = await Promise.all([
+    checkHoneypot(input.chain, pair.baseToken.address),
+    checkHolders(input.chain, pair.baseToken.address),
+    checkSolanaSecurity(input.chain, pair.baseToken.address),
+    // Cross-source price audit — uses the resolved address + DexScreener price.
+    checkConsistency(input.chain, pair.baseToken.address, priceUsd),
+  ]);
+  const holders = evmHolders ?? solHolders;
 
   const { flags, score, level, scores, confidence, confidenceNote } = assessRisk(
     pair,
     source,
     honeypot,
     resolution,
-    holders
+    holders,
+    consistency
   );
 
   const base: Omit<TokenReport, "summary"> = {
@@ -183,6 +187,34 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
             trustedToken: citeOpt(holders.result.trustedToken, holders.source),
           }
         : undefined,
+    consistency: consistency
+      ? {
+          referencePriceUsd: citeOpt(consistency.result.referencePriceUsd, source),
+          llamaPriceUsd:
+            consistency.llamaSource !== undefined
+              ? citeOpt(consistency.result.llamaPriceUsd, consistency.llamaSource)
+              : undefined,
+          llamaConfidence:
+            consistency.llamaSource !== undefined
+              ? citeOpt(consistency.result.llamaConfidence, consistency.llamaSource)
+              : undefined,
+          coingeckoPriceUsd:
+            consistency.coingeckoSource !== undefined
+              ? citeOpt(consistency.result.coingeckoPriceUsd, consistency.coingeckoSource)
+              : undefined,
+          marketCapUsd:
+            consistency.coingeckoSource !== undefined
+              ? citeOpt(consistency.result.marketCapUsd, consistency.coingeckoSource)
+              : undefined,
+          coingeckoVolume24hUsd:
+            consistency.coingeckoSource !== undefined
+              ? citeOpt(consistency.result.coingeckoVolume24hUsd, consistency.coingeckoSource)
+              : undefined,
+          pricedSources: consistency.result.pricedSources,
+          maxDivergencePct: citeOpt(consistency.result.maxDivergencePct, consistency.source),
+          aggregatorListed: consistency.result.aggregatorListed,
+        }
+      : undefined,
     riskScore: score,
     riskLevel: level,
     scores,
@@ -193,6 +225,8 @@ export async function runResearch(input: ResearchInput): Promise<TokenReport> {
       source,
       ...(honeypot ? [honeypot.source] : []),
       ...(holders && holders.result.found ? [holders.source] : []),
+      ...(consistency?.llamaSource ? [consistency.llamaSource] : []),
+      ...(consistency?.coingeckoSource ? [consistency.coingeckoSource] : []),
       ...(flags.map((f) => f.source).filter(Boolean) as Source[]),
     ]),
     generatedAt: new Date().toISOString(),

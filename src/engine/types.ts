@@ -150,6 +150,24 @@ export interface TokenReport {
     trustedToken?: Cited<boolean>;
   };
   /**
+   * Cross-source price-consistency audit. DexScreener gives one price from one
+   * pool; this compares it against independent by-contract aggregators
+   * (DefiLlama, CoinGecko). Agreement is a legitimacy signal; a DEX-priced token
+   * that is unlisted on every aggregator, or a large divergence, is a red flag.
+   * Absent for chains neither aggregator supports.
+   */
+  consistency?: {
+    referencePriceUsd?: Cited<number>;
+    llamaPriceUsd?: Cited<number>;
+    llamaConfidence?: Cited<number>;
+    coingeckoPriceUsd?: Cited<number>;
+    marketCapUsd?: Cited<number>;
+    coingeckoVolume24hUsd?: Cited<number>;
+    pricedSources: number;
+    maxDivergencePct?: Cited<number>;
+    aggregatorListed: boolean;
+  };
+  /**
    * A2A enrichment annex: the deliverable of ANOTHER CAP agent this agent
    * hired (and paid) as part of fulfilling the order. contentHash is the
    * upstream order's own on-chain commitment, so the chain of custody is

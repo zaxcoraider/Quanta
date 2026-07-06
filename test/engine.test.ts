@@ -14,6 +14,7 @@ import {
 import { assessRisk } from "../src/engine/risk";
 import { parseHolders, type HoldersResult } from "../src/engine/holders";
 import { parseSolanaSecurity } from "../src/engine/solana";
+import { computeConsistency } from "../src/engine/consistency";
 import { renderMarkdown } from "../src/engine/report";
 import { fetchJson, clearHttpCache } from "../src/engine/http";
 import { hireUpstream, hireForCapability, _activeHireCount } from "../src/upstream";
@@ -28,7 +29,12 @@ import {
   type TokenVerdict,
 } from "../src/zodyl-provider";
 import { collectSources, matchContentHash, normalizeHash } from "../src/verify";
-import { toDeliverable, renderFlag, renderSource } from "../src/provider";
+import { toDeliverable, renderFlag, renderSource, handleNegotiation as quantaHandleNegotiation } from "../src/provider";
+import {
+  handleNegotiation as zodylHandleNegotiation,
+  handlePaid as zodylHandlePaid,
+} from "../src/zodyl-provider";
+import { SERVICE_ID as QUANTA_SVC, ZODYL_SERVICE_ID as ZODYL_SVC } from "../src/config";
 import { buildAnalystFacts, maybeSummarize } from "../src/llm";
 import { keccak256 } from "js-sha3";
 import { createHash } from "node:crypto";
@@ -980,6 +986,65 @@ test("toDeliverable preserves scalar fields untouched", () => {
   assert.equal(d.confidence, "high");
 });
 
+// --------------------------------------------- cross-source price consistency
+console.log("consistency");
+
+// HEALTHY() (defined above) = a pair with no market flags of its own.
+const consist = (result: ReturnType<typeof computeConsistency>) => ({ result, source: SRC });
+
+test("computeConsistency: three agreeing prices → 3 sources, tiny divergence, listed", () => {
+  const r = computeConsistency({ referencePriceUsd: 100, llamaPriceUsd: 100.5, coingeckoPriceUsd: 99.8 });
+  assert.equal(r.pricedSources, 3);
+  assert.equal(r.aggregatorListed, true);
+  assert.ok(r.maxDivergencePct! < 1, "≈0.7% divergence");
+});
+
+test("computeConsistency: DEX price but no aggregator → unlisted, 1 source, no divergence", () => {
+  const r = computeConsistency({ referencePriceUsd: 100 });
+  assert.equal(r.aggregatorListed, false);
+  assert.equal(r.pricedSources, 1);
+  assert.equal(r.maxDivergencePct, undefined);
+});
+
+test("computeConsistency: divergent prices → correct max divergence %", () => {
+  const r = computeConsistency({ referencePriceUsd: 100, coingeckoPriceUsd: 150 });
+  assert.equal(r.pricedSources, 2);
+  assert.equal(r.maxDivergencePct, 50, "(150-100)/100");
+});
+
+test("assessRisk: unlisted-everywhere raises AGGREGATOR_UNLISTED", () => {
+  const cr = computeConsistency({ referencePriceUsd: 5 });
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, null, consist(cr));
+  assert.ok(r.flags.some((f) => f.code === "AGGREGATOR_UNLISTED"));
+});
+
+test("assessRisk: large divergence raises PRICE_DIVERGENCE_HIGH (market)", () => {
+  const cr = computeConsistency({ referencePriceUsd: 100, coingeckoPriceUsd: 200 });
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, null, consist(cr));
+  const f = r.flags.find((f) => f.code === "PRICE_DIVERGENCE_HIGH");
+  assert.ok(f, "expected high-divergence flag");
+  assert.equal(f!.category, "market");
+  assert.ok(r.scores.market.score > 0, "divergence feeds the market subscore");
+});
+
+test("assessRisk: close agreement across sources → positive CROSS_SOURCE_CONSISTENT (no score)", () => {
+  const cr = computeConsistency({ referencePriceUsd: 100, llamaPriceUsd: 100.5, coingeckoPriceUsd: 100.2 });
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, null, consist(cr));
+  const f = r.flags.find((f) => f.code === "CROSS_SOURCE_CONSISTENT");
+  assert.ok(f, "expected consistency signal");
+  assert.equal(f!.category, "positive");
+  // A positive flag never raises risk: a healthy token with only a positive
+  // consistency signal stays "low" (the only non-positive flag is NO_MAJOR_FLAGS).
+  assert.equal(r.level, "low");
+  assert.ok(!r.flags.some((f) => f.code.startsWith("PRICE_DIVERGENCE")), "no divergence flag when sources agree");
+});
+
+test("assessRisk: low DefiLlama confidence raises LOW_PRICE_CONFIDENCE", () => {
+  const cr = computeConsistency({ referencePriceUsd: 100, llamaPriceUsd: 100, llamaConfidence: 0.4 });
+  const r = assessRisk(HEALTHY(), SRC, null, undefined, null, consist(cr));
+  assert.ok(r.flags.some((f) => f.code === "LOW_PRICE_CONFIDENCE"));
+});
+
 // --------------------------------------------------- registry + capability router
 console.log("registry / router");
 
@@ -1162,6 +1227,110 @@ test("toPortfolioDeliverable renders tokens to CAP-safe strings", () => {
   assert.match(d.tokens[0], /WETH \| low \| 10\/100/);
   assert.match(d.tokens[0], /hash 0xa/);
   assert.equal(d.portfolioRiskScore, 10, "scalar fields untouched");
+});
+
+// ---------------------------------------- A2A composability: BOTH directions
+// Drives the REAL exported provider handlers against an in-memory CAP backend —
+// no network, no keys, no USDC. Proves the full loop: a buyer hires Zodyl
+// (Zodyl is a PROVIDER), and to fulfill it Zodyl hires Quanta per token (Zodyl
+// is simultaneously a REQUESTER). That two-sided flow is what "A2A composable"
+// means, exercised end to end.
+console.log("A2A composability (both directions)");
+
+atest("A2A ↓ provider: Quanta accepts a valid due-diligence request", async () => {
+  const accepted: string[] = [];
+  const client = {
+    getNegotiation: async (id: string) => ({ negotiationId: id, serviceId: QUANTA_SVC, requirements: JSON.stringify({ chain: "base", token: "0x4200000000000000000000000000000000000006" }) }),
+    acceptNegotiation: async (id: string) => { accepted.push(id); return { order: { orderId: "ord_" + id } }; },
+    rejectNegotiation: async () => {},
+  } as any;
+  await quantaHandleNegotiation(client, { negotiation_id: "qn_ok_1" } as any);
+  assert.deepEqual(accepted, ["qn_ok_1"], "valid requirements → accepted");
+});
+
+atest("A2A ↓ provider: Quanta rejects malformed requirements (no token)", async () => {
+  const rejected: string[] = [];
+  const client = {
+    getNegotiation: async (id: string) => ({ negotiationId: id, serviceId: QUANTA_SVC, requirements: JSON.stringify({ chain: "base" }) }),
+    acceptNegotiation: async () => ({ order: { orderId: "x" } }),
+    rejectNegotiation: async (id: string) => { rejected.push(id); },
+  } as any;
+  await quantaHandleNegotiation(client, { negotiation_id: "qn_bad_1" } as any);
+  assert.deepEqual(rejected, ["qn_bad_1"], "bad requirements → rejected, never accepted");
+});
+
+atest("A2A ↓ provider: Zodyl accepts a valid watchlist, rejects an empty one", async () => {
+  const accepted: string[] = [];
+  const okClient = {
+    getNegotiation: async (id: string) => ({ negotiationId: id, serviceId: ZODYL_SVC, requirements: JSON.stringify({ chain: "base", tokens: ["A", "B"] }) }),
+    acceptNegotiation: async (id: string) => { accepted.push(id); return { order: { orderId: "o_" + id } }; },
+    rejectNegotiation: async () => {},
+  } as any;
+  await zodylHandleNegotiation(okClient, { negotiation_id: "zn_ok_1" } as any);
+  assert.deepEqual(accepted, ["zn_ok_1"]);
+
+  const rejected: string[] = [];
+  const badClient = {
+    getNegotiation: async (id: string) => ({ negotiationId: id, serviceId: ZODYL_SVC, requirements: JSON.stringify({ chain: "base" }) }),
+    acceptNegotiation: async () => ({ order: { orderId: "x" } }),
+    rejectNegotiation: async (id: string) => { rejected.push(id); },
+  } as any;
+  await zodylHandleNegotiation(badClient, { negotiation_id: "zn_bad_1" } as any);
+  assert.deepEqual(rejected, ["zn_bad_1"]);
+});
+
+atest("A2A ↕ FULL LOOP: buyer→Zodyl→Quanta — Zodyl is PROVIDER and REQUESTER in one order", async () => {
+  const stream = fakeStream();
+  const registry: AgentServiceEntry[] = [
+    { capability: "due-diligence", serviceId: "svc_quanta", agentName: "Quanta", tier: "internal" },
+  ];
+  const negotiated: any[] = [];
+  const delivered: any[] = [];
+  let seq = 0;
+
+  const client = {
+    // --- Zodyl-as-PROVIDER: the buyer's paid portfolio order ---
+    getOrder: async (id: string) => ({ orderId: id, serviceId: ZODYL_SVC, negotiationId: "NP1" }),
+    getNegotiation: async (id: string) => ({ negotiationId: id, serviceId: ZODYL_SVC, requirements: JSON.stringify({ chain: "base", tokens: ["TA", "TB"] }) }),
+    deliverOrder: async (id: string, req: any) => { delivered.push({ id, deliverable: JSON.parse(req.deliverableSchema) }); return {}; },
+    rejectOrder: async () => {},
+    // --- Zodyl-as-REQUESTER: an auto-responding "Quanta" for each token hire ---
+    negotiateOrder: async ({ serviceId, requirements }: any) => {
+      const n = `qn${++seq}`, o = `qo${seq}`;
+      negotiated.push({ serviceId, requirements });
+      setImmediate(() => stream.emit("order_created", { order_id: o, negotiation_id: n }));
+      return { negotiationId: n };
+    },
+    payOrder: async (id: string) => { setImmediate(() => stream.emit("order_completed", { order_id: id })); return { txHash: "0xpay" }; },
+    getDelivery: async (id: string) => ({
+      orderId: id,
+      // Distinct risk per token so the aggregate is meaningful; each carries its
+      // own on-chain contentHash (the per-token chain of custody).
+      deliverableSchema: JSON.stringify(
+        id === "qo1"
+          ? { riskScore: 10, riskLevel: "low", confidence: "high", flags: ["NO_MAJOR_FLAGS | low | market | ok"] }
+          : { riskScore: 80, riskLevel: "critical", confidence: "high", flags: ["HONEYPOT_DETECTED | critical | contract | unsellable"] }
+      ),
+      deliverableText: "",
+      contentHash: `0xhash_${id}`,
+    }),
+  } as any;
+
+  await zodylHandlePaid(client, stream, registry, { order_id: "PORTFOLIO1" } as any);
+
+  // REQUESTER direction: Zodyl hired the due-diligence service once per token.
+  assert.equal(negotiated.length, 2, "Zodyl hired Quanta twice (one per token)");
+  assert.ok(negotiated.every((n) => n.serviceId === "svc_quanta"), "hired the routed due-diligence service");
+
+  // PROVIDER direction: Zodyl delivered ONE aggregated portfolio for the buyer.
+  assert.equal(delivered.length, 1, "exactly one portfolio delivered");
+  assert.equal(delivered[0].id, "PORTFOLIO1");
+  const port = delivered[0].deliverable;
+  assert.equal(port.portfolioRiskLevel, "critical", "portfolio risk = riskiest holding");
+  assert.equal(port.portfolioRiskScore, 80);
+  assert.deepEqual(port.distribution, { low: 1, medium: 0, high: 0, critical: 1 });
+  assert.equal(port.provenance.contentHashes.length, 2, "per-token on-chain proofs carried through the hop");
+  assert.ok(port.tokens.every((t: any) => typeof t === "string"), "tokens rendered CAP-safe");
 });
 
 // ----------------------------------------------------------------------- result

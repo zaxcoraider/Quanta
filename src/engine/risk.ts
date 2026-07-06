@@ -6,6 +6,7 @@
 import type { DexPair } from "./dexscreener";
 import type { HoneypotResult } from "./honeypot";
 import type { HoldersResult } from "./holders";
+import type { ConsistencyResult } from "./consistency";
 import type {
   CategoryScore,
   Confidence,
@@ -46,7 +47,8 @@ export function assessRisk(
   source: Source,
   honeypot?: { result: HoneypotResult; source: Source } | null,
   resolution?: Resolution,
-  holders?: { result: HoldersResult; source: Source } | null
+  holders?: { result: HoldersResult; source: Source } | null,
+  consistency?: { result: ConsistencyResult; source: Source } | null
 ): {
   flags: RiskFlag[];
   score: number;
@@ -108,6 +110,43 @@ export function assessRisk(
 
   if (fdv > 0 && liq > 0 && fdv / liq > 100) {
     add("FDV_LIQUIDITY_MISMATCH", "medium", "market", `FDV is ${Math.round(fdv / liq)}x liquidity — most supply cannot exit at quoted price.`, source);
+  }
+
+  // ---- Cross-source price consistency (DefiLlama + CoinGecko) -----------------
+  // DexScreener's single-pool price is cross-checked against independent
+  // by-contract aggregators. Agreement is legitimacy; unlisted-everywhere or a
+  // large divergence is a manipulation / spoof signal.
+  if (consistency) {
+    const cr = consistency.result;
+    const cs = consistency.source;
+    const div = cr.maxDivergencePct;
+
+    if (cr.referencePriceUsd !== undefined && cr.referencePriceUsd > 0 && !cr.aggregatorListed) {
+      add(
+        "AGGREGATOR_UNLISTED",
+        "medium",
+        "market",
+        "Priced on a DEX but listed on NO major aggregator (DefiLlama, CoinGecko) — typical of a very new, illiquid, or impersonating token. Verify by contract before trusting the price.",
+        cs
+      );
+    }
+
+    if (div !== undefined) {
+      if (div >= 25) {
+        add("PRICE_DIVERGENCE_HIGH", "high", "market", `Price disagrees by ${div.toFixed(1)}% across independent sources — stale pool, thin liquidity, or manipulation.`, cs);
+      } else if (div >= 7) {
+        add("PRICE_DIVERGENCE_MODERATE", "medium", "market", `Price differs by ${div.toFixed(1)}% across independent sources — reconcile before trading.`, cs);
+      }
+    }
+
+    if (cr.llamaConfidence !== undefined && cr.llamaConfidence < 0.9) {
+      add("LOW_PRICE_CONFIDENCE", "medium", "market", `DefiLlama reports low pricing confidence (${cr.llamaConfidence.toFixed(2)}) — the price is thinly supported.`, cs);
+    }
+
+    // Legitimacy signal: multiple independent sources agree closely.
+    if (cr.pricedSources >= 2 && div !== undefined && div < 7) {
+      add("CROSS_SOURCE_CONSISTENT", "low", "positive", `Price agrees within ${div.toFixed(1)}% across ${cr.pricedSources} independent sources (DexScreener/DefiLlama/CoinGecko) — corroborated, not a single-pool quote.`, cs);
+    }
   }
 
   // ---- Contract behavior (Honeypot.is on-chain simulation) -------------------

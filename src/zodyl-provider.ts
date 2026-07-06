@@ -198,7 +198,7 @@ type Stream = Awaited<ReturnType<AgentClient["connectWebSocket"]>>;
 const seenNegotiations = new Set<string>();
 const seenPaidOrders = new Set<string>();
 
-async function handleNegotiation(client: AgentClient, ev: Event) {
+export async function handleNegotiation(client: AgentClient, ev: Event) {
   const negotiationId = ev.negotiation_id;
   if (!negotiationId || seenNegotiations.has(negotiationId)) return;
   seenNegotiations.add(negotiationId);
@@ -221,7 +221,7 @@ async function handleNegotiation(client: AgentClient, ev: Event) {
   }
 }
 
-async function handlePaid(client: AgentClient, stream: Stream, registry: AgentServiceEntry[], ev: Event) {
+export async function handlePaid(client: AgentClient, stream: Stream, registry: AgentServiceEntry[], ev: Event) {
   const orderId = ev.order_id;
   if (!orderId || seenPaidOrders.has(orderId)) return;
   seenPaidOrders.add(orderId);

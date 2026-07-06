@@ -40,6 +40,19 @@ gracefully when a source doesn't cover a chain:
    holder concentration — with GoPlus's Solana **trust list** as a positive signal.
    One Solana call covers both the authority and holder dimensions, so a Solana
    token that used to return market-data-only now gets a full report.
+5. **Cross-source price consistency** — DexScreener quotes ONE price from ONE
+   pool, which is manipulable. This cross-checks it against two independent
+   aggregators that address the token **by contract** (never by symbol, which
+   would reintroduce impersonation risk): **DefiLlama** (price + confidence) and
+   **CoinGecko** (price + market cap + 24h volume). Close agreement across
+   sources is a `CROSS_SOURCE_CONSISTENT` legitimacy signal; a DEX-priced token
+   that is **unlisted on every aggregator** (`AGGREGATOR_UNLISTED`) is a classic
+   spoof / illiquid tell; a large `PRICE_DIVERGENCE` points to a stale pool or
+   manipulation. Every figure stays cited to its exact JSON endpoint, so the
+   verifier re-fetches all of it. (CoinPaprika and per-protocol TVL were
+   deliberately *not* wired in: CoinPaprika is symbol/coin-id keyed with no
+   by-contract lookup — the same impersonation hole we close elsewhere — and
+   DefiLlama's TVL endpoints are per-protocol, not per-token.)
 
 Two design choices keep this from false-flagging legitimate tokens:
 
@@ -209,6 +222,7 @@ src/
     honeypot.ts      Contract-behavior check via on-chain buy/sell simulation (free, no key, EVM)
     holders.ts       EVM holder distribution + contract-capability surface via GoPlus (free, no key)
     solana.ts        Solana SPL/Token-2022 authority + holder check via GoPlus Solana (free, no key)
+    consistency.ts   Cross-source price audit vs DefiLlama + CoinGecko (by contract, free, no key)
     risk.ts          Transparent, auditable heuristics + per-dimension subscores + confidence
     report.ts        Renders a TokenReport as a human-readable Markdown brief (`--md`)
     http.ts          Shared fetch: timeout + retry/backoff (429/5xx) + honest TTL cache
