@@ -4,3 +4,8 @@ dist/
 *.log
 .DS_Store
 .claude/
+
+# Internal working notes — not for the public repo / judges
+HANDOFF.md
+HANDOFF.local.md
+logs/
