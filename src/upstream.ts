@@ -19,6 +19,7 @@
 
 import { EventType, type AgentClient, type Event } from "@croo-network/sdk";
 import type { Source, TokenReport } from "./engine/types";
+import { route, explainRoute, type AgentServiceEntry } from "./registry";
 
 type Stream = Awaited<ReturnType<AgentClient["connectWebSocket"]>>;
 export type UpstreamAnnex = NonNullable<TokenReport["upstream"]>;
@@ -183,4 +184,39 @@ export async function hireUpstream(
         settle(null);
       });
   });
+}
+
+/**
+ * Router transport — the "CEO" hire. Given a capability, ask the registry who
+ * can provide it (internal ecosystem first, then store), and hire candidates in
+ * that order until one actually delivers. A down/expired internal agent
+ * gracefully degrades to the next candidate and ultimately to the open store.
+ *
+ * `excludeServiceId` prevents an agent from routing a capability back to its own
+ * service (Quanta hiring Quanta) — pass the caller's own service id.
+ *
+ * Returns the winning annex, tagged with who fulfilled it (agentName/tier) for
+ * the routing audit trail, or null if no candidate delivered in time.
+ */
+export async function hireForCapability(
+  client: AgentClient,
+  stream: Stream,
+  registry: AgentServiceEntry[],
+  capability: string,
+  requirements: string,
+  timeoutMs: number,
+  excludeServiceId = ""
+): Promise<UpstreamAnnex | null> {
+  const candidates = route(registry, capability).filter((c) => c.serviceId !== excludeServiceId);
+  console.log(`🧭 Route ${explainRoute(candidates, capability)}`);
+  for (const c of candidates) {
+    console.log(`   → hiring ${c.agentName} [${c.tier}] ${c.serviceId} for "${capability}"...`);
+    const annex = await hireUpstream(client, stream, c.serviceId, requirements, timeoutMs);
+    if (annex) {
+      return { ...annex, capability, agentName: c.agentName, tier: c.tier };
+    }
+    console.warn(`   ✗ ${c.agentName} [${c.tier}] did not deliver — trying next candidate.`);
+  }
+  if (candidates.length) console.warn(`   ✗ no candidate delivered "${capability}" — proceeding without annex.`);
+  return null;
 }

@@ -1,0 +1,26 @@
+[
+  {
+    "capability": "due-diligence",
+    "serviceId": "svc_argus_example",
+    "agentName": "Argus",
+    "tier": "store",
+    "price": 0.1,
+    "note": "External store research agent — second-opinion fallback when no internal due-diligence agent is free."
+  },
+  {
+    "capability": "image",
+    "serviceId": "svc_rudo_future",
+    "agentName": "Rudo",
+    "tier": "internal",
+    "price": 0.2,
+    "note": "ROADMAP (not deployed this hackathon): ecosystem image-generation agent."
+  },
+  {
+    "capability": "code",
+    "serviceId": "svc_code_future",
+    "agentName": "TBD code agent",
+    "tier": "internal",
+    "price": 0.3,
+    "note": "ROADMAP: ecosystem code-generation agent."
+  }
+]

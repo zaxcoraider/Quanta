@@ -162,6 +162,12 @@ export interface TokenReport {
     contentHash: string;
     deliverable: unknown;
     source: Source;
+    /** Which capability this hop fulfilled (e.g. "due-diligence"). */
+    capability?: string;
+    /** The agent that delivered it, for the routing audit trail. */
+    agentName?: string;
+    /** internal = own ecosystem, store = hired from outside the ecosystem. */
+    tier?: "internal" | "store";
   };
   riskScore: number; // 0 (safe) .. 100 (critical) — overall, across all signals
   riskLevel: RiskLevel;

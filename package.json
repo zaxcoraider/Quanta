@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "provider": "ts-node src/provider.ts",
+    "zodyl": "ts-node src/zodyl-provider.ts",
     "demo": "ts-node src/requester-demo.ts",
+    "demo:portfolio": "ts-node src/portfolio-demo.ts",
     "connect:requester": "ts-node src/connect-requester.ts",
     "fetch:delivery": "ts-node src/fetch-delivery.ts",
     "research": "ts-node src/cli.ts",

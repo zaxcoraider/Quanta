@@ -16,7 +16,17 @@ import { parseHolders, type HoldersResult } from "../src/engine/holders";
 import { parseSolanaSecurity } from "../src/engine/solana";
 import { renderMarkdown } from "../src/engine/report";
 import { fetchJson, clearHttpCache } from "../src/engine/http";
-import { hireUpstream, _activeHireCount } from "../src/upstream";
+import { hireUpstream, hireForCapability, _activeHireCount } from "../src/upstream";
+import { buildRegistry, route, explainRoute, capabilities, type AgentServiceEntry } from "../src/registry";
+import {
+  parsePortfolioInput,
+  aggregatePortfolio,
+  verdictFromAnnex,
+  renderVerdict,
+  toPortfolioDeliverable,
+  levelForScore,
+  type TokenVerdict,
+} from "../src/zodyl-provider";
 import { collectSources, matchContentHash, normalizeHash } from "../src/verify";
 import { toDeliverable, renderFlag, renderSource } from "../src/provider";
 import { buildAnalystFacts, maybeSummarize } from "../src/llm";
@@ -968,6 +978,190 @@ test("toDeliverable preserves scalar fields untouched", () => {
   assert.equal(d.riskScore, 10);
   assert.equal(d.riskLevel, "low");
   assert.equal(d.confidence, "high");
+});
+
+// --------------------------------------------------- registry + capability router
+console.log("registry / router");
+
+test("buildRegistry: ecosystem agents are internal, from their service-id env vars", () => {
+  const reg = buildRegistry({ CROO_SERVICE_ID: "svc_q", CROO_ZODYL_SERVICE_ID: "svc_z" });
+  const q = reg.find((e) => e.agentName === "Quanta")!;
+  const z = reg.find((e) => e.agentName === "Zodyl")!;
+  assert.equal(q.capability, "due-diligence");
+  assert.equal(q.tier, "internal");
+  assert.equal(q.serviceId, "svc_q");
+  assert.equal(z.capability, "portfolio-scan");
+  assert.equal(z.tier, "internal");
+});
+
+test("buildRegistry: CROO_STORE_SERVICES adds store fallbacks", () => {
+  const reg = buildRegistry({
+    CROO_SERVICE_ID: "svc_q",
+    CROO_STORE_SERVICES: JSON.stringify([{ capability: "due-diligence", serviceId: "svc_argus", agentName: "Argus", price: 0.1 }]),
+  });
+  const argus = reg.find((e) => e.serviceId === "svc_argus")!;
+  assert.equal(argus.tier, "store");
+  assert.equal(argus.agentName, "Argus");
+  assert.equal(argus.price, 0.1);
+});
+
+test("buildRegistry: legacy CROO_UPSTREAM_SERVICE_ID folds in as a store entry", () => {
+  const reg = buildRegistry({ CROO_UPSTREAM_SERVICE_ID: "svc_leg" });
+  const leg = reg.find((e) => e.serviceId === "svc_leg")!;
+  assert.equal(leg.tier, "store");
+  assert.equal(leg.capability, "due-diligence");
+});
+
+test("buildRegistry: bad CROO_STORE_SERVICES JSON throws a clear error", () => {
+  assert.throws(() => buildRegistry({ CROO_STORE_SERVICES: "{not json" }), /JSON array/);
+});
+
+test("buildRegistry: de-dupes by (capability, serviceId), first wins", () => {
+  const reg = buildRegistry(
+    { CROO_SERVICE_ID: "svc_q" },
+    [{ capability: "due-diligence", serviceId: "svc_q", agentName: "dup", tier: "store" }]
+  );
+  const dd = reg.filter((e) => e.capability === "due-diligence" && e.serviceId === "svc_q");
+  assert.equal(dd.length, 1, "duplicate (capability, serviceId) collapsed");
+  assert.equal(dd[0].agentName, "Quanta", "first occurrence (internal) wins");
+});
+
+test("route: internal before store, then cheapest, then stable", () => {
+  const reg: AgentServiceEntry[] = [
+    { capability: "due-diligence", serviceId: "s3", agentName: "StorePricey", tier: "store", price: 0.5 },
+    { capability: "due-diligence", serviceId: "s2", agentName: "StoreCheap", tier: "store", price: 0.1 },
+    { capability: "due-diligence", serviceId: "s1", agentName: "Quanta", tier: "internal" },
+    { capability: "other", serviceId: "sx", agentName: "X", tier: "internal" },
+  ];
+  const ordered = route(reg, "due-diligence").map((e) => e.agentName);
+  assert.deepEqual(ordered, ["Quanta", "StoreCheap", "StorePricey"]);
+});
+
+test("route: empty for an unknown capability; explainRoute says so", () => {
+  const reg = buildRegistry({ CROO_SERVICE_ID: "svc_q" });
+  assert.equal(route(reg, "image").length, 0);
+  assert.match(explainRoute([], "image"), /no agent/);
+});
+
+test("capabilities lists the distinct capabilities served", () => {
+  const reg = buildRegistry({ CROO_SERVICE_ID: "svc_q", CROO_ZODYL_SERVICE_ID: "svc_z" });
+  assert.deepEqual(capabilities(reg), ["due-diligence", "portfolio-scan"]);
+});
+
+atest("hireForCapability: prefers internal, tags the annex with who fulfilled it", async () => {
+  const stream = fakeStream();
+  const client = fakeClient({ negotiationId: "nR1" });
+  const reg: AgentServiceEntry[] = [
+    { capability: "due-diligence", serviceId: "svc_store", agentName: "Argus", tier: "store" },
+    { capability: "due-diligence", serviceId: "svc_int", agentName: "Quanta", tier: "internal" },
+  ];
+  const p = hireForCapability(client, stream, reg, "due-diligence", REQ, 5_000);
+  await flush();
+  // Internal (svc_int) is tried first — its negotiation is nR1 (fakeClient default).
+  stream.emit("order_created", { order_id: "oR1", negotiation_id: "nR1" });
+  await flush();
+  stream.emit("order_completed", { order_id: "oR1" });
+  const annex = await p;
+  assert.ok(annex, "expected an annex");
+  assert.equal(annex!.serviceId, "svc_int", "hired the internal agent first");
+  assert.equal(annex!.agentName, "Quanta");
+  assert.equal(annex!.tier, "internal");
+  assert.equal(annex!.capability, "due-diligence");
+});
+
+atest("hireForCapability: excludeServiceId keeps an agent from hiring itself", async () => {
+  const stream = fakeStream();
+  const client = fakeClient({ negotiationId: "nR2" });
+  const reg: AgentServiceEntry[] = [
+    { capability: "due-diligence", serviceId: "svc_self", agentName: "Quanta", tier: "internal" },
+  ];
+  // Only candidate is excluded -> no hire attempted -> null, no hang.
+  const annex = await hireForCapability(client, stream, reg, "due-diligence", REQ, 5_000, "svc_self");
+  assert.equal(annex, null);
+});
+
+// ------------------------------------------------------- Zodyl portfolio aggregate
+console.log("zodyl portfolio");
+
+test("parsePortfolioInput: accepts an array, de-dupes, trims", () => {
+  const inp = parsePortfolioInput({ chain: "base", tokens: ["WETH", " weth ", "USDC"] });
+  assert.equal(inp.chain, "base");
+  assert.deepEqual(inp.tokens, ["WETH", "USDC"], "case-insensitive de-dupe, order preserved");
+});
+
+test("parsePortfolioInput: accepts a comma/space string", () => {
+  const inp = parsePortfolioInput({ chain: "base", tokens: "WETH, USDC 0xabc" });
+  assert.deepEqual(inp.tokens, ["WETH", "USDC", "0xabc"]);
+});
+
+test("parsePortfolioInput: rejects missing chain / empty watchlist / over-cap", () => {
+  assert.throws(() => parsePortfolioInput({ tokens: ["WETH"] }), /chain/);
+  assert.throws(() => parsePortfolioInput({ chain: "base", tokens: [] }), /tokens/);
+  assert.throws(() => parsePortfolioInput({ chain: "base", tokens: ["a", "b", "c"] }, 2), /Too many/);
+});
+
+test("verdictFromAnnex: extracts score/level/flags/hash from a Quanta annex", () => {
+  const annex = {
+    serviceId: "svc_q",
+    orderId: "o1",
+    contentHash: "0xhash",
+    deliverable: { riskScore: 41, riskLevel: "medium", confidence: "high", flags: ["OWNER_HOLDS_SUPPLY | high | holders | ...", "TAX_MODERATE | medium | contract | ..."] },
+    source: SRC,
+    agentName: "Quanta",
+    tier: "internal" as const,
+  };
+  const v = verdictFromAnnex("BONK", annex);
+  assert.equal(v.ok, true);
+  assert.equal(v.riskScore, 41);
+  assert.equal(v.riskLevel, "medium");
+  assert.equal(v.contentHash, "0xhash");
+  assert.deepEqual(v.topFlags, ["OWNER_HOLDS_SUPPLY", "TAX_MODERATE"]);
+  assert.equal(v.fulfilledBy, "Quanta");
+});
+
+test("aggregatePortfolio: portfolio risk = riskiest holding; distribution + custody", () => {
+  const verdicts: TokenVerdict[] = [
+    { token: "WETH", ok: true, riskScore: 10, riskLevel: "low", contentHash: "0xa" },
+    { token: "SCAM", ok: true, riskScore: 80, riskLevel: "critical", contentHash: "0xb" },
+    { token: "MID", ok: true, riskScore: 30, riskLevel: "medium", contentHash: "0xc" },
+    { token: "DEAD", ok: false, error: "no report" },
+  ];
+  const r = aggregatePortfolio("base", verdicts);
+  assert.equal(r.tokenCount, 4);
+  assert.equal(r.scanned, 3, "only tokens with a report count as scanned");
+  assert.equal(r.portfolioRiskScore, 80, "headline = worst token");
+  assert.equal(r.portfolioRiskLevel, "critical");
+  assert.equal(r.averageRiskScore, 40, "(10+80+30)/3 rounded");
+  assert.equal(r.riskiest!.token, "SCAM");
+  assert.deepEqual(r.distribution, { low: 1, medium: 1, high: 0, critical: 1 });
+  assert.deepEqual(r.provenance.contentHashes, ["0xa", "0xb", "0xc"], "per-token on-chain proofs");
+});
+
+test("aggregatePortfolio: all-failed scan is safe (score 0, empty custody)", () => {
+  const r = aggregatePortfolio("base", [{ token: "X", ok: false, error: "timeout" }]);
+  assert.equal(r.scanned, 0);
+  assert.equal(r.portfolioRiskScore, 0);
+  assert.equal(r.portfolioRiskLevel, "low");
+  assert.deepEqual(r.provenance.contentHashes, []);
+});
+
+test("levelForScore matches the Quanta engine thresholds", () => {
+  assert.equal(levelForScore(70), "critical");
+  assert.equal(levelForScore(45), "high");
+  assert.equal(levelForScore(20), "medium");
+  assert.equal(levelForScore(19), "low");
+});
+
+test("toPortfolioDeliverable renders tokens to CAP-safe strings", () => {
+  const r = aggregatePortfolio("base", [
+    { token: "WETH", ok: true, riskScore: 10, riskLevel: "low", confidence: "high", contentHash: "0xa", fulfilledBy: "Quanta", tier: "internal", topFlags: ["LIQUIDITY_OK"] },
+  ]);
+  const d = toPortfolioDeliverable(r) as any;
+  assert.ok(Array.isArray(d.tokens));
+  assert.equal(typeof d.tokens[0], "string", "tokens flattened to strings for the schema");
+  assert.match(d.tokens[0], /WETH \| low \| 10\/100/);
+  assert.match(d.tokens[0], /hash 0xa/);
+  assert.equal(d.portfolioRiskScore, 10, "scalar fields untouched");
 });
 
 // ----------------------------------------------------------------------- result

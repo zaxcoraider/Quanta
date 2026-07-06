@@ -146,15 +146,62 @@ verifiable hop by hop. The hire is strictly bounded (`CROO_UPSTREAM_TIMEOUT_MS`,
 default 90 s) and best-effort: any upstream failure just means the base report
 ships without the annex — our own SLA is never endangered.
 
+## The ecosystem: Quanta as an orchestrator ("CEO"), not a monolith
+
+Quanta doesn't try to do every job itself. It owns the customer relationship and
+**routes each needed capability to a specialist agent** — hiring from its **own
+ecosystem first**, and only falling back to the **open CROO store** when no
+in-house agent covers a capability. Every hop is a real CAP order (USDC-settled,
+content-hashed), so the whole agent supply chain is verifiable hop by hop.
+
+```
+                    ┌──────── Quanta (orchestrator / router) ────────┐
+   buyer ──order──▶ │  decompose → hire ecosystem first → else store │
+                    └───────────────────────┬────────────────────────┘
+             ┌──────────────┬───────────────┼───────────────┬─────────────┐
+             ▼              ▼                ▼               ▼             ▼
+          Zodyl          Rudo            code agent       …            open store
+      portfolio-scan   image (roadmap)  code (roadmap)               (fallback)
+```
+
+- **`registry.ts`** is the pure decision layer: `buildRegistry(env)` assembles the
+  catalog (internal ecosystem agents from their service-id env vars, plus store
+  fallbacks from `CROO_STORE_SERVICES` / `registry.json`), and `route(capability)`
+  returns candidates **internal-first, then cheapest, then stable**.
+- **`hireForCapability()`** (in `upstream.ts`) is the transport: it walks the routed
+  candidates and hires the first that actually delivers, so a down/expired internal
+  agent gracefully degrades to the store. An agent never routes a capability back to
+  its own service (self-excluded).
+- **Zodyl** (`zodyl-provider.ts`) is the ecosystem's second agent, live today: a
+  *Portfolio Risk Scan* service that does no analysis itself — for each token in a
+  watchlist it **hires Quanta** (through the same router) and aggregates the
+  per-token reports into one portfolio verdict. Portfolio risk = the riskiest
+  holding, and each sub-report carries the on-chain `contentHash` of the Quanta
+  order that produced it, so the whole scan is verifiable end to end. This proves
+  the A2A chain in **both** directions: `buyer → Zodyl → Quanta → data sources`.
+- **Rudo (images)** and a **code agent** are roadmap — they don't serve this
+  hackathon's two tracks, so they're documented in `registry.example.json` and slot
+  into the exact same router with zero rework.
+
+```bash
+# Bring both ecosystem agents online, then hire the portfolio scan:
+npm run provider                                   # Quanta (due-diligence)
+npm run zodyl                                       # Zodyl  (portfolio, composes Quanta)
+npm run demo:portfolio -- base WETH,USDC,0x4200000000000000000000000000000000000006
+```
+
 ## Architecture
 
 ```
 src/
   provider.ts        CAP provider loop — accepts negotiations, delivers on payment (idempotent)
+  registry.ts        Ecosystem catalog + capability router ("CEO brain") — internal-first, store fallback
+  zodyl-provider.ts  Zodyl: Portfolio Risk Scan provider — hires Quanta per token, aggregates a verifiable verdict
   requester-demo.ts  A2A demo: a 2nd agent hires + pays this agent, prints the report
-  upstream.ts        A2A upstream hop: this agent hires ANOTHER CAP agent mid-delivery
+  portfolio-demo.ts  A2A ecosystem demo: a buyer hires Zodyl, which composes Quanta per token
+  upstream.ts        A2A transport: hireUpstream (one agent) + hireForCapability (router over many)
   cli.ts             Run the engine standalone (no CROO keys) — great for the demo video
-  config.ts          Builds AgentClient(s) from env
+  config.ts          Builds AgentClient(s) + loads the ecosystem registry from env
   llm.ts             Optional Claude (claude-opus-4-8) analyst summary
   engine/
     index.ts         runResearch(input) -> TokenReport

@@ -17,10 +17,17 @@
 // in the same transaction.
 
 import { EventType, type AgentClient, type Event } from "@croo-network/sdk";
-import { providerClient, UPSTREAM_SERVICE_ID, UPSTREAM_TIMEOUT_MS } from "./config";
+import {
+  providerClient,
+  SERVICE_ID,
+  UPSTREAM_TIMEOUT_MS,
+  ENRICH_CAPABILITY,
+  loadRegistry,
+} from "./config";
 import { runResearch, validateInput } from "./engine";
 import type { RiskFlag, Source, TokenReport } from "./engine/types";
-import { hireUpstream } from "./upstream";
+import { hireForCapability } from "./upstream";
+import { route, explainRoute, type AgentServiceEntry } from "./registry";
 
 // The registered CAP service declares `flags` and `sources` as arrays of STRING
 // (CAP schema arrays only support primitive item types — string/number/boolean,
@@ -63,9 +70,10 @@ async function handleNegotiation(client: AgentClient, ev: Event) {
   try {
     const negotiation = await client.getNegotiation(negotiationId);
 
-    // Events for negotiations where WE are the requester (our upstream A2A
-    // hires) arrive on this same stream — never try to "accept" our own hire.
-    if (UPSTREAM_SERVICE_ID && negotiation.serviceId === UPSTREAM_SERVICE_ID) return;
+    // We only fulfill orders for OUR OWN service. Negotiations for any other
+    // service on this stream are the router's own A2A hires (where we are the
+    // requester) — never try to "accept" our own hire.
+    if (SERVICE_ID && negotiation.serviceId !== SERVICE_ID) return;
 
     // Validate the requester's requirements up front. If they're malformed we
     // reject with a helpful reason instead of accepting an unfulfillable order.
@@ -86,7 +94,7 @@ async function handleNegotiation(client: AgentClient, ev: Event) {
   }
 }
 
-async function handlePaid(client: AgentClient, stream: Stream, ev: Event) {
+async function handlePaid(client: AgentClient, stream: Stream, registry: AgentServiceEntry[], ev: Event) {
   const orderId = ev.order_id;
   if (!orderId || seenPaidOrders.has(orderId)) return;
   seenPaidOrders.add(orderId);
@@ -94,9 +102,9 @@ async function handlePaid(client: AgentClient, stream: Stream, ev: Event) {
   try {
     const order = await client.getOrder(orderId);
 
-    // Same-stream guard: order_paid also fires for upstream orders we are
-    // PAYING as a requester — those are not ours to fulfill.
-    if (UPSTREAM_SERVICE_ID && order.serviceId === UPSTREAM_SERVICE_ID) return;
+    // Same-stream guard: order_paid also fires for the router's own upstream
+    // orders (where we are the requester) — those are not ours to fulfill.
+    if (SERVICE_ID && order.serviceId !== SERVICE_ID) return;
 
     const negotiation = await client.getNegotiation(order.negotiationId);
     const input = validateInput(JSON.parse(negotiation.requirements || "{}"));
@@ -104,16 +112,22 @@ async function handlePaid(client: AgentClient, stream: Stream, ev: Event) {
     console.log(`🔎 Order ${orderId} paid. Researching ${input.token} on ${input.chain}...`);
     const report = await runResearch(input);
 
-    // Optional A2A hop: hire an upstream CAP agent for an enrichment annex.
-    // Bounded and best-effort — never blocks or fails our own delivery.
-    if (UPSTREAM_SERVICE_ID) {
-      console.log(`🔗 Hiring upstream CAP service ${UPSTREAM_SERVICE_ID} for enrichment...`);
-      const annex = await hireUpstream(
+    // Optional A2A hop, routed through the ecosystem registry: hire a specialist
+    // for ENRICH_CAPABILITY — internal ecosystem agents first, then the open
+    // store — and attach its cited, on-chain-committed deliverable as an annex.
+    // Self-excluded (Quanta never hires Quanta) and best-effort: any failure
+    // just ships the base report, so our own SLA is never endangered.
+    const enrichCandidates = route(registry, ENRICH_CAPABILITY).filter((c) => c.serviceId !== SERVICE_ID);
+    if (enrichCandidates.length) {
+      console.log(`🔗 Enriching via router — ${explainRoute(enrichCandidates, ENRICH_CAPABILITY)}`);
+      const annex = await hireForCapability(
         client,
         stream,
-        UPSTREAM_SERVICE_ID,
+        registry,
+        ENRICH_CAPABILITY,
         negotiation.requirements,
-        UPSTREAM_TIMEOUT_MS
+        UPSTREAM_TIMEOUT_MS,
+        SERVICE_ID
       );
       if (annex) {
         report.upstream = annex;
@@ -126,9 +140,12 @@ async function handlePaid(client: AgentClient, stream: Stream, ev: Event) {
       deliverableSchema: JSON.stringify(toDeliverable(report)),
     });
 
+    const annexNote = report.upstream
+      ? ` incl. ${report.upstream.tier} annex from ${report.upstream.agentName}`
+      : "";
     console.log(
       `📦 Delivered order ${orderId}: risk=${report.riskLevel} (${report.riskScore}/100), ` +
-        `${report.sources.length} source(s)${report.upstream ? " incl. A2A upstream annex" : ""}. ` +
+        `${report.sources.length} source(s)${annexNote}. ` +
         `Settlement will clear on verification.`
     );
   } catch (e: any) {
@@ -144,10 +161,11 @@ async function handlePaid(client: AgentClient, stream: Stream, ev: Event) {
 
 async function main() {
   const client = providerClient();
+  const registry = loadRegistry();
   const stream = await client.connectWebSocket();
 
   stream.on(EventType.NegotiationCreated, (ev) => void handleNegotiation(client, ev));
-  stream.on(EventType.OrderPaid, (ev) => void handlePaid(client, stream, ev));
+  stream.on(EventType.OrderPaid, (ev) => void handlePaid(client, stream, registry, ev));
 
   stream.on(EventType.OrderCompleted, (ev) =>
     console.log(`🎉 Order ${ev.order_id} completed — USDC settled to provider wallet.`)
@@ -157,8 +175,9 @@ async function main() {
   );
 
   console.log("🟢 Quanta provider online. Listening for orders on CAP...");
-  if (UPSTREAM_SERVICE_ID) {
-    console.log(`🔗 A2A upstream enrichment enabled: ${UPSTREAM_SERVICE_ID}`);
+  const enrichCandidates = route(registry, ENRICH_CAPABILITY).filter((c) => c.serviceId !== SERVICE_ID);
+  if (enrichCandidates.length) {
+    console.log(`🔗 Router enrichment enabled — ${explainRoute(enrichCandidates, ENRICH_CAPABILITY)}`);
   }
 
   // Keep the process alive; EventStream auto-reconnects internally.
