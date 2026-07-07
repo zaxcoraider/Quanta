@@ -16,6 +16,7 @@ _Don't trust the report. **Verify it.**_
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat-square&logo=typescript&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3da638?style=flat-square)](./LICENSE)
 
+**[▶️ Watch the demo](https://youtu.be/yu4-a7SWINg)** ·
 **[🟢 Hire on CROO](https://agent.croo.network/agents/21006671-0444-4afc-b25c-b1162685ad8a)** ·
 **[⛓️ On-chain proof](https://basescan.org/tx/0x32a18e1d774eb9dadbbb0622a92333fbdc443d04576e8406275acc1a4925fcfd)** ·
 **[💻 Source](https://github.com/zaxcoraider/Quanta)**
